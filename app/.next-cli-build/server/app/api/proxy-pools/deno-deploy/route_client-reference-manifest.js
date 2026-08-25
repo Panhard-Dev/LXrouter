@@ -1,0 +1,1 @@
+globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/proxy-pools/deno-deploy/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"/Users/Working/router4/9router/src/app/api/proxy-pools/deno-deploy/route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

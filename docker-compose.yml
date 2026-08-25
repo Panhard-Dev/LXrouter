@@ -1,0 +1,16 @@
+services:
+  9router:
+    build: .
+    image: 9router:local
+    container_name: 9router
+    restart: unless-stopped
+    ports:
+      - "20128:20128"
+    environment:
+      - PORT=20128
+      - HOSTNAME=0.0.0.0
+    volumes:
+      - 9router-data:/root/.9router
+
+volumes:
+  9router-data:
