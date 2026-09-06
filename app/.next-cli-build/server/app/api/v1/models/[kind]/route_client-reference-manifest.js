@@ -1,1 +1,0 @@
-globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/v1/models/[kind]/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"/Users/Working/router4/9router/src/app/api/v1/models/[kind]/route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

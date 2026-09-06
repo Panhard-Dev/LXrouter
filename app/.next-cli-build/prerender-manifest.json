@@ -2,6 +2,10 @@
   "version": 4,
   "routes": {
     "/": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 7175,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -26,6 +30,10 @@
       ]
     },
     "/_global-error": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 8999,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -51,6 +59,10 @@
     },
     "/_not-found": {
       "initialStatus": 404,
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 10171,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -75,6 +87,10 @@
       ]
     },
     "/callback": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 10075,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -99,6 +115,10 @@
       ]
     },
     "/dashboard": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 26943,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -123,6 +143,10 @@
       ]
     },
     "/dashboard/basic-chat": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 29570,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -147,6 +171,10 @@
       ]
     },
     "/dashboard/cli-tools": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 29481,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -171,6 +199,10 @@
       ]
     },
     "/dashboard/combos": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 27675,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -195,6 +227,10 @@
       ]
     },
     "/dashboard/endpoint": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 27458,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -219,6 +255,10 @@
       ]
     },
     "/dashboard/media-providers/web": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 49397,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -243,6 +283,10 @@
       ]
     },
     "/dashboard/mitm": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 32570,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -267,6 +311,10 @@
       ]
     },
     "/dashboard/profile": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 37903,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -291,6 +339,10 @@
       ]
     },
     "/dashboard/providers": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 27566,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -315,6 +367,10 @@
       ]
     },
     "/dashboard/providers/new": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 37501,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -339,6 +395,10 @@
       ]
     },
     "/dashboard/proxy-pools": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 27625,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -363,6 +423,10 @@
       ]
     },
     "/dashboard/pxpipe": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 31629,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -387,6 +451,10 @@
       ]
     },
     "/dashboard/quota": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 34000,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -411,6 +479,10 @@
       ]
     },
     "/dashboard/settings/pricing": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 13551,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -435,6 +507,10 @@
       ]
     },
     "/dashboard/skills": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 40122,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -459,6 +535,10 @@
       ]
     },
     "/dashboard/token-saver": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 30643,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -483,6 +563,10 @@
       ]
     },
     "/dashboard/translator": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 36529,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -507,6 +591,10 @@
       ]
     },
     "/dashboard/usage": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 27175,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -536,6 +624,9 @@
         "content-type": "image/x-icon",
         "x-next-cache-tags": "_N_T_/layout,_N_T_/favicon.ico/layout,_N_T_/favicon.ico/route,_N_T_/favicon.ico"
       },
+      "routeType": "route",
+      "response": "complete",
+      "compute": "static",
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -560,6 +651,10 @@
       ]
     },
     "/landing": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 33513,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -584,6 +679,10 @@
       ]
     },
     "/login": {
+      "routeType": "page",
+      "response": "complete",
+      "compute": "static",
+      "htmlSize": 10083,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -613,6 +712,9 @@
         "content-type": "application/manifest+json",
         "x-next-cache-tags": "_N_T_/layout,_N_T_/manifest.webmanifest/layout,_N_T_/manifest.webmanifest/route,_N_T_/manifest.webmanifest"
       },
+      "routeType": "route",
+      "response": "complete",
+      "compute": "static",
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -640,8 +742,8 @@
   "dynamicRoutes": {},
   "notFoundRoutes": [],
   "preview": {
-    "previewModeId": "f49da571b360586b97d78479cebd6d73",
-    "previewModeSigningKey": "850d30798d5923a62cb7887a74a37c028eb5d766cee6391fd0ee8a581b061e12",
-    "previewModeEncryptionKey": "667d7b9f2fe00fb3c2c6a8483a51b64be84892db13d73538236f0d91c0e1b536"
+    "previewModeId": "a30946a422af48cdf5d86cc4e89d0f31",
+    "previewModeSigningKey": "c26557c8f1d617ac7339822806569b0fa361a58db09f27cebb3cb58403b8963d",
+    "previewModeEncryptionKey": "583db103b6c60254c5d78826d43c623f5c7674e954b2ce413f1ea072dd3a9cdb"
   }
 }

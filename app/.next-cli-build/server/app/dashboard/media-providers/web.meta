@@ -7,12 +7,35 @@
   "segmentPaths": [
     "/_tree",
     "/_full",
-    "/!KGRhc2hib2FyZCk/dashboard/media-providers/web/__PAGE__",
-    "/!KGRhc2hib2FyZCk/dashboard/media-providers/web",
-    "/!KGRhc2hib2FyZCk/dashboard/media-providers",
-    "/!KGRhc2hib2FyZCk/dashboard",
-    "/!KGRhc2hib2FyZCk",
-    "/_index",
-    "/_head"
-  ]
+    "/!KGRhc2hib2FyZCk/dashboard/media-providers/web/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 96,
+            "slots": {
+              "children": {
+                "hints": 96,
+                "slots": {
+                  "children": {
+                    "hints": 96,
+                    "slots": {
+                      "children": {
+                        "hints": 160,
+                        "slots": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

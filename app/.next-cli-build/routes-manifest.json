@@ -185,12 +185,12 @@
       "namedRegex": "^/api/usage/(?<nxtPconnectionId>[^/]+?)/codex\\-reset\\-credits(?:/)?$"
     },
     {
-      "page": "/api/v1/models/[kind]",
-      "regex": "^/api/v1/models/([^/]+?)(?:/)?$",
+      "page": "/api/v1/models/[...model]",
+      "regex": "^/api/v1/models/(.+?)(?:/)?$",
       "routeKeys": {
-        "nxtPkind": "nxtPkind"
+        "nxtPmodel": "nxtPmodel"
       },
-      "namedRegex": "^/api/v1/models/(?<nxtPkind>[^/]+?)(?:/)?$"
+      "namedRegex": "^/api/v1/models/(?<nxtPmodel>.+?)(?:/)?$"
     },
     {
       "page": "/api/v1/videos/[id]",
@@ -558,6 +558,12 @@
       "namedRegex": "^/api/models/availability(?:/)?$"
     },
     {
+      "page": "/api/models/catalog-sync",
+      "regex": "^/api/models/catalog\\-sync(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/models/catalog\\-sync(?:/)?$"
+    },
+    {
       "page": "/api/models/custom",
       "regex": "^/api/models/custom(?:/)?$",
       "routeKeys": {},
@@ -604,6 +610,12 @@
       "regex": "^/api/oauth/gitlab/pat(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/api/oauth/gitlab/pat(?:/)?$"
+    },
+    {
+      "page": "/api/oauth/grok-cli/bulk-import",
+      "regex": "^/api/oauth/grok\\-cli/bulk\\-import(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/oauth/grok\\-cli/bulk\\-import(?:/)?$"
     },
     {
       "page": "/api/oauth/iflow/cookie",

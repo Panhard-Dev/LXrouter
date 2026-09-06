@@ -1,0 +1,1 @@
+globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/oauth/grok-cli/bulk-import/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"/Users/Working/router4/9router/src/app/api/oauth/grok-cli/bulk-import/route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

@@ -7,11 +7,30 @@
   "segmentPaths": [
     "/_tree",
     "/_full",
-    "/!KGRhc2hib2FyZCk/dashboard/usage/__PAGE__",
-    "/!KGRhc2hib2FyZCk/dashboard/usage",
-    "/!KGRhc2hib2FyZCk/dashboard",
-    "/!KGRhc2hib2FyZCk",
-    "/_index",
-    "/_head"
-  ]
+    "/!KGRhc2hib2FyZCk/dashboard/usage/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 96,
+            "slots": {
+              "children": {
+                "hints": 96,
+                "slots": {
+                  "children": {
+                    "hints": 160,
+                    "slots": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

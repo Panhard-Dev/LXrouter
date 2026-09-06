@@ -7,11 +7,30 @@
   "segmentPaths": [
     "/_tree",
     "/_full",
-    "/dashboard/settings/pricing/__PAGE__",
-    "/dashboard/settings/pricing",
-    "/dashboard/settings",
-    "/dashboard",
-    "/_index",
-    "/_head"
-  ]
+    "/dashboard/settings/pricing/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 96,
+            "slots": {
+              "children": {
+                "hints": 96,
+                "slots": {
+                  "children": {
+                    "hints": 160,
+                    "slots": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

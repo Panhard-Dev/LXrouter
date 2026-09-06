@@ -7,9 +7,20 @@
   "segmentPaths": [
     "/_tree",
     "/_full",
-    "/landing/__PAGE__",
-    "/landing",
-    "/_index",
-    "/_head"
-  ]
+    "/landing/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 160,
+            "slots": null
+          }
+        }
+      }
+    }
+  }
 }
