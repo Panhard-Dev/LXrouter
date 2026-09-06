@@ -48,6 +48,8 @@ const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/muse-spark-1.3-contrib
 const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
 const GIST_ID = process.env.FARM_GIST_ID || "f4d5df48748c6be6d66d6794107908f4";
+const GIST_URL = `https://gist.githubusercontent.com/Panhard-Dev/${GIST_ID}/raw/`;
+const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim()).filter(Boolean);
 
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 let lastRedeploy = 0;
@@ -115,18 +117,34 @@ async function harvestCandidates(emPool) {
       !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS));
   }
   const found = new Set(diretos);
-  for (const src of SOURCES) {
-    if (diretos.includes(src)) continue;
+  const baixarLista = async (src) => {
+    // direto; se vier vazio, tenta via relays (burla desafio de datacenter)
     try {
       const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
       const body = await res.text();
-      let n = 0;
-      for (const line of body.split("\n")) {
-        const px = line.trim();
-        if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) { found.add("http://" + px); n++; }
-      }
-      console.log(`[farmer] fonte ${src.split("/")[2]}: +${n}`);
-    } catch (e) { console.log(`[farmer] fonte ${src.split("/")[2]} FALHOU: ${e.message}`); }
+      if (body.split("\n").some(l => /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(l.trim()))) return body;
+    } catch {}
+    for (const relay of RELAYS) {
+      try {
+        const res = await fetch(relay, { headers: { "x-relay-target": src }, signal: AbortSignal.timeout(20000) });
+        const body = await res.text();
+        if (body.split("\n").some(l => /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(l.trim()))) {
+          console.log(`[farmer] ${src.split("/")[2]} veio via relay (${relay.split("//")[1].slice(0, 22)}...)`);
+          return body;
+        }
+      } catch {}
+    }
+    return "";
+  };
+  for (const src of SOURCES) {
+    if (diretos.includes(src)) continue;
+    const body = await baixarLista(src);
+    let n = 0;
+    for (const line of body.split("\n")) {
+      const px = line.trim();
+      if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) { found.add("http://" + px); n++; }
+    }
+    console.log(`[farmer] fonte ${src.split("/")[2].slice(0, 26)}: +${n}`);
   }
   harvestCache = { at: Date.now(), list: [...found] };
   return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
