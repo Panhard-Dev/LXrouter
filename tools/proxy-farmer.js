@@ -33,7 +33,7 @@ const SOURCES = (process.env.FARM_SOURCES ||
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
 ).split(",").map(s => s.trim()).filter(Boolean);
-const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 12);
+const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);
 const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 60);
 const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
@@ -41,7 +41,6 @@ const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const PREFIX = "auto-";
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
-let errSample = 0;
 
 const state = { dead: {}, stats: { cycles: 0, created: 0, removed: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
@@ -62,8 +61,8 @@ function testProxyConnect(proxyUrl, timeoutMs) {
     socket.setTimeout(timeoutMs);
     socket.on("connect", () => socket.write(`CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n\r\n`));
     socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
-    socket.on("error", e => { if (errSample < 25) { errSample++; console.log(`[debug-erro] ${proxyUrl} -> ${e.code || e.message}`); } finish(null); });
-    socket.on("timeout", () => { if (errSample < 25 && !done) { errSample++; console.log(`[debug-timeout] ${proxyUrl}`); } finish(null); });
+    socket.on("error", () => finish(null));
+    socket.on("timeout", () => finish(null));
     socket.on("close", () => finish(null));
   });
 }
@@ -139,27 +138,32 @@ async function guardCycle() {
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
   const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
 
-  // 1) router-testa todos os meus em paralelo (10 por vez); falhou, deleta JÁ
+  // 1) quem o router ja marcou error/inativo: fora IMEDIATO (sem re-teste)
+  // 2) os demais: re-verifica pelo router em paralelo (10 por vez); falhou, fora
+  const mortos = mine.filter(p => p.testStatus === "error" || p.isActive === false);
+  const aTestar = mine.filter(p => !mortos.includes(p));
   let vivos = 0;
   let idx = 0;
-  const mortos = [];
+  const reprovados = [];
   const checker = async () => {
-    while (idx < mine.length) {
-      const pool = mine[idx++];
+    while (idx < aTestar.length) {
+      const pool = aTestar[idx++];
       const res = await routerTest(pool.id);
       if (res.ok) vivos++;
-      else mortos.push(pool);
+      else reprovados.push(pool);
     }
   };
   await Promise.all(Array.from({ length: 10 }, checker));
-  for (const pool of mortos) {
+  for (const pool of [...mortos, ...reprovados]) {
     await api("DELETE", "/api/proxy-pools/" + pool.id);
     state.dead[pool.proxyUrl] = Date.now();
     state.stats.removed++;
   }
+  if (mortos.length) console.log(`[farmer ${cycles}] ${mortos.length} error/inativo removidos na hora`);
 
-  // 2) reposicao imediata se ficou abaixo do alvo
-  let need = POOL_SIZE - vivos;
+  // 2) renovacao: perdeu 20% do alvo (ex: 50 -> caiu pra 40) repoe ate o alvo
+  const alvoMin = Math.floor(POOL_SIZE * 0.8);
+  let need = vivos < alvoMin ? POOL_SIZE - vivos : 0;
   let criados = 0;
   if (need > 0) {
     const emPool = new Set(mine.map(p => p.proxyUrl));
