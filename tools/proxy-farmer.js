@@ -50,7 +50,13 @@ const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
 const GIST_ID = process.env.FARM_GIST_ID || "f4d5df48748c6be6d66d6794107908f4";
 const GIST_URL = `https://gist.githubusercontent.com/Panhard-Dev/${GIST_ID}/raw/`;
-const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim()).filter(Boolean);
+const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim())).map(s2 => {
+    const t = s2.trim();
+    const mm = t.match(/^(?:https?:\/\/)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})(?::([^:@]+):([^@]+))?$/);
+    if (!mm) return t;
+    const [, ip, port, user, pass] = mm;
+    return `http://${user ? `${user}:${pass}@` : ""}${ip}:${port}`;
+  }).filter(Boolean);
 
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 let lastRedeploy = 0;
@@ -146,7 +152,7 @@ async function harvestCandidates(emPool) {
       const px = line.trim().startsWith("http") ? line.trim() : "http://" + line.trim();
       found.add(px); n++;
     }
-    console.log(`[farmer] fonte ${src.split("/")[2].slice(0, 26)}: +${n}`);
+    console.log(`[farmer] fonte ${(src.split("/")[2] || src).slice(0, 26)}: +${n}`);
   }
   harvestCache = { at: Date.now(), list: [...found] };
   return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
