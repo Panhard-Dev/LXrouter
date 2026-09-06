@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const dataDir = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
-const key = (process.env.FIXED_API_KEY || "").trim();
+const key = (process.env.FIXED_API_KEY || "sk-lxr-9f2c4e71a8d3").trim();
 const dbPath = path.join(dataDir, "db", "data.sqlite");
 
 if (!key) { console.log("[init-key] FIXED_API_KEY vazia, pulando"); process.exit(0); }
