@@ -197,7 +197,7 @@ async function guardCycle() {
       process.exit(0); // o container vai morer no redeploy de qualquer forma
     }
     if (!REDEPLOY_KEY) console.log(`[farmer ${cycles}] (sem FARM_REDEPLOY_KEY: aguardando reset natural de ~5h)`);
-    return; // sessao queimada domina: nao poda nem replante neste ciclo
+    // mesmo queimado, PLANTA e PODA normal: os pools ficam prontos pro reset
   }
   burnsSeguidos = 0;
 
