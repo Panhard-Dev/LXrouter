@@ -60,6 +60,7 @@ const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 let lastRedeploy = 0;
 let burnsSeguidos = 0;
+let flushLocal = false;
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
@@ -212,7 +213,6 @@ async function guardCycle() {
   const list = await api("GET", "/api/proxy-pools");
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
   let mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
-  let flushLocal = false;
 
   if (flushLocal && mine.length) {
     for (const pool of mine) {
