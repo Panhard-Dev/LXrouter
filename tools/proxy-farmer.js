@@ -1,24 +1,27 @@
-// Proxy Farmer: mantem o Proxy Pools do 9router sempre cheio de proxies
-// publicos vivos, validados pelo teste do proprio router.
+// Proxy Window: mantem exatamente WEBSHARE_WINDOW pools "auto-" ativos no
+// 9router, girados a cada WEBSHARE_ROTATE_SEC a partir de uma lista FIXA de
+// proxies Webshare embutida no codigo (lista fixa, sem env).
 //
-// - Vigilancia continua: a cada FARM_WATCH_SEC testa todos os pools "auto-"
-//   pelo router; error/inativo e deletado na hora e reposto.
-// - Colheita: gist (publicada pelo farmer local) + listas publicas filtradas
-//   por pais. github sempre via relay (datacenter leva desafio do cloudflare).
-// - Canario: 1 request minucula pelo router com modelo rapido; 2 canarios 429
-//   seguidos = sessao queimada -> redeploy automatico (nova sessao = nova cota).
-// - Pools sem o prefixo "auto-" sao intocaveis (webshare, relays, manual).
+// Regras:
+// - Lista fixa: 20 proxies Webshare (2 credenciais x 10 IPs), cada um com 1GB.
+// - Janela: so WEBSHARE_WINDOW (5) entram em cena por vez; a janela gira
+//   sozinha a cada WEBSHARE_ROTATE_SEC (300s = 5 min).
+// - Validacao REAL antes de entrar: request de verdade pelo router com
+//   oc/ling-3.0-flash-fin-free saindo por AQUELE ip. 429/RegionError/403 =
+//   ip queimado -> nao entra (nao gasta janela).
+// - Se WEBSHARE_MAX_BAD (3) dos ativos derem erro no cheque do ciclo, a
+//   janela troca na hora (antes dos 5 min).
+// - TUDO queimar (nenhum valido na lista inteira) = todos pools off:
+//   o router usa a rede padrao (ip da casa/datacenter do deploy).
+// - rotateStrategy = round-robin garantido em todos os providers, sempre.
 //
-// Env (tudo opcional):
+// Env (opcional, tudo tem padrao):
 //   ROUTER_URL / ROUTER_PASSWORD / DATA_DIR / FARM_STATE_FILE
-//   FARM_POOL_SIZE (50) / FARM_WATCH_SEC (30) / FARM_WAVE (400)
-//   FARM_TIMEOUT_MS (9000) / FARM_TEST_URL / FARM_SOURCES
-//   FARM_CANARY_MODEL (oc/ling-3.0-flash-fin-free)
-//   FARM_RENOVAR_PCT (80: repoe quando cair abaixo de 80% do alvo)
-//   FARM_REDEPLOY_KEY + FARM_REDEPLOY_SERVICE (auto-redeploy quando queima)
-//   FARM_RELAYS (relays vercel usados como ponte pras fontes do github)
+//   (nenhum: a lista dos 20 webshare vive so aqui no codigo)
+//   WEBSHARE_WINDOW (5) / WEBSHARE_ROTATE_SEC (300) / WEBSHARE_MAX_BAD (3)
+//   WEBSHARE_TEST_MODEL (oc/ling-3.0-flash-fin-free) / WEBSHARE_TIMEOUT_MS (12000)
+//   FARM_PROVIDER_ALIAS (opencode)
 
-const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -27,70 +30,50 @@ const ROUTER_URL = (process.env.ROUTER_URL || "http://127.0.0.1:20128").replace(
 const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD || "123456";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-farmer.json");
-const GIST_URL = process.env.FARM_GIST_URL || "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw/";
-const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s => s.trim()).filter(Boolean);
-const SOURCES = (process.env.FARM_SOURCES ||
-  GIST_URL + "," +
-  "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000," +
-  "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
-  "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt," +
-  "https://www.proxy-list.download/api/v1/get?type=http&anon=elite," +
-  "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/http.txt"
-).split(",").map(s => s.trim()).filter(Boolean);
-const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);   // alvo fixo: 50
-const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 30);   // renovacao rapida
-const RENOVAR_PCT = Number(process.env.FARM_RENOVAR_PCT || 80); // repoe quando cair abaixo de 80% do alvo
-const WAVE = Number(process.env.FARM_WAVE || 400);
-const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
-const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
-const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-free";  // rapido
-// modelos pesados: queimam antes do ling, ento entram no canario tambem
-const HEAVY_CANARY_MODELS = (process.env.FARM_HEAVY_CANARY || "oc/muse-spark-1.2-contributor-free(xhigh)").split(",").map(s => s.trim()).filter(Boolean);
-const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";     // unica env que costuma ir no deploy
-const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
-const PREFIX = "auto-";
-const OC_BATCH = Number(process.env.FARM_OC_BATCH || 15);   // membros testados no caminho opencode por ciclo
-const OC_FALHAS = Number(process.env.FARM_OC_FALHAS || 2);  // falhas seguidas ate deletar
-const ONCE = process.argv.includes("--once");
-const DEAD_RETRY_MS = 24 * 3600 * 1000;
-const BURNED_RETRY_MS = 5 * 3600 * 1000;  // ip queimado pro opencode volta no ciclo de ~5h
 
-const state = { dead: {}, burned: {}, ocFails: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
+// 20 proxies Webshare (2 credenciais x 10 IPs). Cada um tem 1GB de trafego.
+const WEBSHARE_DEFAULT = [
+  "31.59.20.176:6754:ggktmmgj:8tqz9nbdylav",
+  "45.38.107.97:6014:ggktmmgj:8tqz9nbdylav",
+  "198.105.121.200:6462:ggktmmgj:8tqz9nbdylav",
+  "64.137.96.74:6641:ggktmmgj:8tqz9nbdylav",
+  "198.23.243.226:6361:ggktmmgj:8tqz9nbdylav",
+  "38.154.185.97:6370:ggktmmgj:8tqz9nbdylav",
+  "84.247.60.125:6095:ggktmmgj:8tqz9nbdylav",
+  "142.111.67.146:5611:ggktmmgj:8tqz9nbdylav",
+  "191.96.254.138:6185:ggktmmgj:8tqz9nbdylav",
+  "31.58.9.4:6077:ggktmmgj:8tqz9nbdylav",
+  "31.59.20.176:6754:zxucoiox:1mg8kgu44l0q",
+  "45.38.107.97:6014:zxucoiox:1mg8kgu44l0q",
+  "198.105.121.200:6462:zxucoiox:1mg8kgu44l0q",
+  "64.137.96.74:6641:zxucoiox:1mg8kgu44l0q",
+  "198.23.243.226:6361:zxucoiox:1mg8kgu44l0q",
+  "38.154.185.97:6370:zxucoiox:1mg8kgu44l0q",
+  "84.247.60.125:6095:zxucoiox:1mg8kgu44l0q",
+  "142.111.67.146:5611:zxucoiox:1mg8kgu44l0q",
+  "191.96.254.138:6185:zxucoiox:1mg8kgu44l0q",
+  "31.58.9.4:6077:zxucoiox:1mg8kgu44l0q",
+].map(s => {
+  const [host, port, user, pass] = s.split(":");
+  return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+});
+
+// lista FIXA embutida no codigo - nao depende de env nenhum
+const WEBSHARE = WEBSHARE_DEFAULT;
+
+const WINDOW_SIZE = Number(process.env.WEBSHARE_WINDOW || 5);       // 5 em cena
+const ROTATE_SEC = Number(process.env.WEBSHARE_ROTATE_SEC || 300);   // gira a cada 5 min
+const MAX_BAD = Number(process.env.WEBSHARE_MAX_BAD || 3);          // 3/5 errados = troca na hora
+const TEST_MODEL = process.env.WEBSHARE_TEST_MODEL || "oc/ling-3.0-flash-fin-free";
+const TIMEOUT_MS = Number(process.env.WEBSHARE_TIMEOUT_MS || 12000);
+const ALIAS = process.env.FARM_PROVIDER_ALIAS || "opencode";
+const PREFIX = "auto-";
+const ONCE = process.argv.includes("--once");
+
+const state = { dead: {}, stats: { cycles: 0, rotations: 0, created: 0, removed: 0, fallbackRede: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const ehLinhaProxy = l => {
-  const t = (l || "").trim();
-  return /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t) || /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t);
-};
-const target = new URL(TEST_URL);
-
-// teste de proxy sem curl: CONNECT no alvo e ve se responde 200
-function testProxyConnect(proxyUrl, timeoutMs) {
-  return new Promise(resolve => {
-    let m;
-    try { m = new URL(proxyUrl); } catch { return resolve(null); }
-    const port = Number(m.port) || (m.protocol === "https:" ? 443 : 80);
-    const socket = net.connect(port, m.hostname);
-    let done = false;
-    const finish = r => { if (!done) { done = true; socket.destroy(); resolve(r); } };
-    socket.setTimeout(timeoutMs);
-    socket.on("connect", () => {
-      let req = `CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n`;
-      if (m.username) req += `Proxy-Authorization: Basic ${Buffer.from(decodeURIComponent(m.username) + ":" + decodeURIComponent(m.password)).toString("base64")}\r\n`;
-      socket.write(req + "\r\n");
-    });
-    socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
-    socket.on("error", () => finish(null));
-    socket.on("timeout", () => finish(null));
-    socket.on("close", () => finish(null));
-  });
-}
-const testProxy = proxyUrl => Promise.race([
-  testProxyConnect(proxyUrl, TIMEOUT_MS),
-  sleep(TIMEOUT_MS + 1500).then(() => null),
-]);
 
 let cookie = "";
 async function api(method, apiPath, body) {
@@ -98,6 +81,7 @@ async function api(method, apiPath, body) {
     method,
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(TIMEOUT_MS * 2),
   });
   for (const c of res.headers.getSetCookie?.() || []) {
     const kv = c.split(";")[0];
@@ -106,266 +90,159 @@ async function api(method, apiPath, body) {
   let json = null; try { json = await res.json(); } catch {}
   return { status: res.status, json };
 }
+// a rota do pool so aceita PUT (PATCH devolve 405 silencioso)
+const patch = (id, body) => api("PUT", `/api/proxy-pools/${id}`, body);
+const delPool = id => api("DELETE", "/api/proxy-pools/" + id);
 
-// o teste do proprio router e a autoridade (atualiza testStatus/isActive no painel)
-async function routerTest(poolId) {
-  const res = await api("POST", `/api/proxy-pools/${poolId}/test`);
-  return { ok: !!(res.json && res.json.ok), elapsed: (res.json && res.json.elapsedMs) || 0 };
+async function listPools() {
+  const r = await api("GET", "/api/proxy-pools");
+  return (r.json && (r.json.proxyPools || r.json.pools || r.json.data)) || [];
 }
 
-// valida um membro no caminho OPENCODE: os outros pools ficam inativos,
-// a request sai por esse ip especifico; 429/RegionError = ip queimado
-async function validarMembroOpencode(poolId, todosPools) {
+// request REAL pelo router com SO esse pool ativo: o trafego sai por aquele ip.
+// 429/RegionError/403 = queimado. Timeout/refused = proxy morto.
+async function testarIpReal(poolId, todosPools) {
   for (const p of todosPools) {
-    if (p.id !== poolId && p.isActive !== false) {
-      await api("PATCH", `/api/proxy-pools/${p.id}`, { isActive: false });
-    }
+    if (p.id !== poolId && p.isActive !== false) { try { await patch(p.id, { isActive: false }); } catch {} }
   }
-  await api("PATCH", `/api/proxy-pools/${poolId}`, { isActive: true });
-  const res = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8,
-    messages: [{ role: "user", content: "ok" }] });
-  for (const p of todosPools) {
-    if (p.id !== poolId) { try { await api("PATCH", `/api/proxy-pools/${p.id}`, { isActive: true }); } catch {} }
-  }
-  const m = JSON.stringify(res.json || {});
-  const falha = m.includes("FreeUsageLimitError") || m.includes("RegionError") || m.includes('"status":403');
-  return { ok: !falha, detalhe: falha ? (res.json?.error?.message || "queimado").slice(0, 80) : "ok" };
-}
-
-// baixa uma lista: github via relay primeiro (datacenter leva desafio do cloudflare)
-const temProxy = b => (b || "").split("\n").some(ehLinhaProxy);
-const ehGithub = u => /gist\.githubusercontent\.com|raw\.githubusercontent\.com/.test(u);
-const ehLinha = b => (b || "").split("\n").some(ehLinhaProxy);
-async function baixarLista(src) {
-  const ordem = ehGithub(src) ? ["relay", "direto"] : ["direto", "relay"];
-  for (const modo of ordem) {
-    if (modo === "direto") {
-      try {
-        const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
-        const body = await res.text();
-        if (ehLinha(body)) return body;
-      } catch {}
-      continue;
-    }
-    for (const relay of RELAYS) {
-      try {
-        const res = await fetch(relay, { headers: { "x-relay-target": src }, signal: AbortSignal.timeout(20000) });
-        const body = await res.text();
-        if (ehLinha(body)) { console.log(`[farmer] lista via relay: ${src.split("/")[2]}`); return body; }
-      } catch {}
-    }
-  }
-  return "";
-}
-
-let harvestCache = { at: 0, list: [] };
-const vivoAgora = (emPool, px) => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
-  !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS);
-async function harvestCandidates(emPool) {
-  const diretos = SOURCES.filter(s => {
-    try { const u = new URL(s); return /^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) && (u.pathname === "/" || u.pathname === ""); } catch { return false; }
+  await patch(poolId, { isActive: true });
+  const r = await api("POST", "/v1/chat/completions", {
+    model: TEST_MODEL, stream: false, max_tokens: 2048,
+    messages: [{ role: "user", content: "ok" }],
   });
-  if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
-    return [...diretos, ...harvestCache.list].filter(px => vivoAgora(emPool, px));
-  }
-  const found = new Set(diretos);
-  for (const src of SOURCES) {
-    if (diretos.includes(src)) continue;
-    const body = await baixarLista(src);
-    let n = 0;
-    for (const line of body.split("\n")) {
-      if (!ehLinhaProxy(line)) continue;
-      const px = line.trim().startsWith("http") ? line.trim() : "http://" + line.trim();
-      found.add(px); n++;
-    }
-    console.log(`[farmer] fonte ${(src.split("/")[2] || src).slice(0, 26)}: +${n}`);
-  }
-  harvestCache = { at: Date.now(), list: [...found] };
-  return [...diretos, ...harvestCache.list].filter(px => vivoAgora(emPool, px));
+  const s = JSON.stringify(r.json || {});
+  const queimado = s.includes("FreeUsageLimitError") || s.includes("RegionError") || s.includes('"status":403');
+  const morto = r.status === 0 || s.includes("ECONNREFUSED") || s.includes("ETIMEDOUT") || s.includes("tunneling socket");
+  // devolve o pool pro estado anterior (so ele ativo -> fica ativo; os outros voltam depois)
+  return { ok: r.status === 200 && !queimado && !morto, queimado, morto };
 }
 
-// onda de testes com worker-pool: sempre termina
-async function testWave(candidates) {
-  const passers = [];
-  let idx = 0;
-  const worker = async () => {
-    while (idx < candidates.length) {
-      const px = candidates[idx++];
-      const ip = await Promise.race([testProxy(px), sleep(TIMEOUT_MS + 1500).then(() => null)]);
-      if (ip) passers.push(px);
-      else state.dead[px] = Date.now();
-    }
-  };
-  await Promise.all(Array.from({ length: 40 }, worker));
-  console.log(`[debug-wave] candidatos: ${candidates.length} | passers: ${passers.length}`);
-  return passers;
+function poolName(px) {
+  const m = /@([^:]+):(\d+)/.exec(px) || /\/\/([^:]+):(\d+)/.exec(px);
+  return PREFIX + (m ? m[1] + ":" + m[2] : px.replace(/^https?:\/\//, ""));
 }
 
-let cycles = 0;
-let burnsSeguidos = 0;
-let lastRedeploy = 0;
-async function guardCycle() {
-  cycles++;
-  const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
-  if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
-
-  // canario: request minucula pelo router. A cota queima POR MODELO: o muse
-  // (pesado) queima bem antes do ling (leve). Testa os dois; qualquer um 429
-  // conta como burn - senao o redeploy nunca dispara quando so o muse queima.
-  const canaryModels = [CANARY_MODEL, ...HEAVY_CANARY_MODELS.filter(m => m && m !== CANARY_MODEL)];
-  let canaryMsg = "";
-  let any429 = false;
-  for (const cm of canaryModels) {
-    const c = await api("POST", "/v1/chat/completions", { model: cm, stream: false, max_tokens: 2048, messages: [{ role: "user", content: "ok" }] });
-    const m = JSON.stringify(c.json || {});
-    canaryMsg += m;
-    if (m.includes("FreeUsageLimitError")) any429 = true;
-  }
-  const canary = { json: { error: any429 ? { message: "FreeUsageLimitError" } : {} } };
-  const msg = canaryMsg;
-  if (any429) {
-    burnsSeguidos++;
-    console.log(`[farmer ${cycles}] CANARIO 429 (${burnsSeguidos} seguidos) - sessao queimada`);
-    if (REDEPLOY_KEY && REDEPLOY_SERVICE && burnsSeguidos >= 2 && Date.now() - lastRedeploy > 10 * 60 * 1000) {
-      try {
-        const res = await fetch(`https://api.render.com/v1/services/${REDEPLOY_SERVICE}/deploys`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${REDEPLOY_KEY}`, "content-type": "application/json" },
-          body: JSON.stringify({ clearCache: "do_not_clear" }),
-        });
-        lastRedeploy = Date.now();
-        state.stats.redeploys++;
-        console.log(`[farmer ${cycles}] REDEPLOY disparado (${res.status}) - nova sessao = cota nova`);
-      } catch (e) { console.log(`[farmer ${cycles}] redeploy falhou:`, e.message); }
-    }
-  } else {
-    burnsSeguidos = 0;
-  }
-
-  const list = await api("GET", "/api/proxy-pools");
-  const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
-  const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
-
-  // 1) error/inativo que o router ja marcou: fora imediato
-  const mortos = mine.filter(p => p.testStatus === "error" || p.isActive === false);
-  const aTestar = mine.filter(p => !mortos.includes(p));
-
-  // 2) re-verifica os demais pelo router em paralelo (10 por vez); falhou, fora
-  let vivos = 0;
-  let idx = 0;
-  const reprovados = [];
-  const checker = async () => {
-    while (idx < aTestar.length) {
-      const pool = aTestar[idx++];
-      const res = await routerTest(pool.id);
-      if (res.ok) vivos++;
-      else reprovados.push(pool);
-    }
-  };
-  await Promise.all(Array.from({ length: 10 }, checker));
-  for (const pool of [...mortos, ...reprovados]) {
-    await api("DELETE", "/api/proxy-pools/" + pool.id);
-    state.dead[pool.proxyUrl] = Date.now();
-    state.stats.removed++;
-  }
-  if (mortos.length) console.log(`[farmer ${cycles}] ${mortos.length} error/inativo removidos na hora`);
-
-  // 2.5) VALIDACAO OPENCODE POR MEMBRO: desativa os outros, request pelo router
-  // sai por UM ip especifico; 429/RegionError nesse ip = queimado pro opencode = fora.
-  // (o canario so testa a sessao sorteada; aqui e deterministic por ip)
-  const restantes = mine.filter(p => !mortos.includes(p) && !reprovados.includes(p));
-  if (restantes.length && canary.json && !msg.includes("503")) {
-    let cursor = Number(state.ocCursor || 0);
-    const lote = [];
-    for (let k = 0; k < Math.min(OC_BATCH, restantes.length); k++) {
-      lote.push(restantes[(cursor + k) % restantes.length]);
-    }
-    state.ocCursor = (cursor + lote.length) % Math.max(1, restantes.length);
-
-    // desativa todos os pools auto (outros ficam de fora do sorteio)
-    for (const pool of mine) {
-      if (pool.isActive !== false) await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: false });
-    }
-    let fora = 0;
-    for (const pool of lote) {
-      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: true });
-      const res = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8,
-        messages: [{ role: "user", content: "ok" }] });
-      const m = JSON.stringify(res.json || {});
-      const queimado = m.includes("FreeUsageLimitError") || m.includes("RegionError") || m.includes('"status":403');
-      const px = pool.proxyUrl;
-      if (queimado) {
-        state.ocFails[px] = (state.ocFails[px] || 0) + 1;
-        if (state.ocFails[px] >= OC_FALHAS) {
-          await api("DELETE", "/api/proxy-pools/" + pool.id);
-          state.dead[px] = Date.now();
-          state.stats.removed++;
-          fora++;
-          console.log(`  [oc-fora] ${px} queimado pro opencode (${state.ocFails[px]}x)`);
-        }
-      } else {
-        state.ocFails[px] = 0;
-      }
-      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: false });
-    }
-    // reativa os sobreviventes (PATCH em pool deletado so da 404, inofensivo)
-    for (const pool of mine) {
-      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: true });
-    }
-    if (fora) console.log(`[farmer ${cycles}] validacao opencode: ${fora} ip(s) queimados removidos`);
-  }
-
-  // 3) renovacao: caiu abaixo de RENOVAR_PCT% do alvo, repoe ate o alvo
-  const alvoMin = Math.floor(POOL_SIZE * RENOVAR_PCT / 100);
-  let need = vivos < alvoMin ? POOL_SIZE - vivos : 0;
-  let criados = 0;
-  if (need > 0) {
-    const emPool = new Set(mine.map(p => p.proxyUrl));
-    const candidatos = await harvestCandidates(emPool);
-    console.log(`[farmer ${cycles}] ${vivos} vivos, faltam ${need}; ${candidatos.length} candidatos`);
-    const passers = await testWave(candidatos.slice(0, WAVE));
-    for (const px of passers) {
-      if (need <= 0) break;
-      const create = await api("POST", "/api/proxy-pools", { name: PREFIX + px.replace(/^https?:\/\//, ""), proxyUrl: px, isActive: true });
-      if (create.status >= 300) continue;
-      const newId = (create.json && (create.json.pool?.id || create.json.id)) || null;
-      const rt = newId ? await routerTest(newId) : { ok: false };
-      const oc = rt.ok && newId ? await validarMembroOpencode(newId, mine) : { ok: false };
-      if (rt.ok && oc.ok) { criados++; need--; vivos++; state.stats.created++; console.log(`  [adiciona] ${px} (router ${rt.elapsed}ms + opencode ok)`); }
-      else {
-        if (newId) await api("DELETE", "/api/proxy-pools/" + newId);
-        if (rt.ok) state.burned[px] = Date.now();  // proxy vivo, mas queimado pro opencode
-        else state.dead[px] = Date.now();
-      }
-    }
-  }
-
-  // 4) Rotation Strategy = random em todos os providers, sempre
+// garante round-robin em todos os providers (default da UI e "none": so um pool)
+async function garantirRoundRobin() {
   const st = await api("GET", "/api/settings");
   const settings = st.json || {};
   const strategies = { ...(settings.providerStrategies || {}) };
-  let mudou = false;
-  const ALIAS = process.env.FARM_PROVIDER_ALIAS || "opencode";
   if (!strategies[ALIAS] || typeof strategies[ALIAS] !== "object") strategies[ALIAS] = {};
-  strategies[ALIAS].rotateStrategy = "random";
+  let mudou = false;
+  if (strategies[ALIAS].rotateStrategy !== "round-robin") { strategies[ALIAS].rotateStrategy = "round-robin"; mudou = true; }
   for (const alias of Object.keys(strategies)) {
-    if (strategies[alias].rotateStrategy !== "random") { strategies[alias].rotateStrategy = "random"; mudou = true; }
+    if (alias !== ALIAS && strategies[alias].rotateStrategy !== "round-robin") { strategies[alias].rotateStrategy = "round-robin"; mudou = true; }
   }
   await api("PATCH", "/api/settings", { providerStrategies: strategies });
-  if (mudou || strategies[ALIAS].rotateStrategy === "random") {
-    console.log(`[farmer ${cycles}] rotateStrategy=random garantido em: ${Object.keys(strategies).join(", ")}`);
+  return mudou;
+}
+
+// apaga todos os pools auto- e replanta a janela (inicial ou rotacionada)
+async function plantarJanela(startIdx, todosPools) {
+  for (const p of todosPools) {
+    if (typeof p.name === "string" && p.name.startsWith(PREFIX)) { await delPool(p.id); state.stats.removed++; }
+  }
+  const ativos = [];
+  for (let i = 0; i < WINDOW_SIZE; i++) {
+    const px = WEBSHARE[(startIdx + i) % WEBSHARE.length];
+    const create = await api("POST", "/api/proxy-pools", { name: poolName(px), proxyUrl: px, isActive: true });
+    if (create.status >= 300) continue;
+    const id = create.json?.proxyPool?.id || create.json?.pool?.id || create.json?.id;
+    if (id) { ativos.push({ id, px }); state.stats.created++; }
+  }
+  return ativos;
+}
+
+async function ciclo() {
+  state.stats.cycles++;
+  const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
+  if (login.json?.success === false) { console.log(`[window ${state.stats.cycles}] login falhou`); return; }
+
+  await garantirRoundRobin();
+
+  const agora = Date.now();
+  const ultimo = Number(state.lastRotate || 0);
+  const precisaGirar = agora - ultimo >= ROTATE_SEC * 1000;
+  let todos = await listPools();
+  let meus = todos.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+
+  // primeira rodada (banco vazio) ou hora de girar a janela
+  if (!meus.length || precisaGirar) {
+    const start = Number(state.nextStart || 0);
+    const ativos = await plantarJanela(start, todos);
+    state.lastRotate = agora;
+    state.nextStart = (start + WINDOW_SIZE) % WEBSHARE.length;
+    state.stats.rotations++;
+    console.log(`[window ${state.stats.cycles}] janela plantada: ${ativos.map(a => a.px.replace(/https?:\/\/[^@]+@/, "")).join(", ")}`);
+    todos = await listPools();
+    meus = todos.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  }
+
+  // valida cada ativo com request REAL; conta queimados
+  let queimados = 0, vivos = [];
+  for (const p of meus) {
+    const r = await testarIpReal(p.id, todos);
+    if (r.ok) vivos.push(p);
+    else {
+      queimados++;
+      state.dead[p.proxyUrl] = Date.now();
+      console.log(`[window ${state.stats.cycles}] ${p.name}: ${r.queimado ? "QUEIMADO (429/region)" : "MORTO (conexao)"}`);
+    }
+  }
+
+  // 3+ dos 5 errados = troca a janela AGORA (nao espera os 5 min)
+  if (queimados >= MAX_BAD) {
+    console.log(`[window ${state.stats.cycles}] ${queimados}/${meus.length} errados -> TROCANDO JANELA AGORA`);
+    const start = Number(state.nextStart || 0);
+    // pula ips sabidos queimados: avanca o start ate achar bloco com candidatos novos
+    todos = await listPools();
+    const ativos = await plantarJanela(start, todos);
+    state.lastRotate = agora;
+    state.nextStart = (start + WINDOW_SIZE) % WEBSHARE.length;
+    state.stats.rotations++;
+    console.log(`[window ${state.stats.cycles}] nova janela: ${ativos.map(a => a.px.replace(/https?:\/\/[^@]+@/, "")).join(", ")}`);
+    // re-testa a nova janela na hora de vir
+    const novos = await listPools();
+    const meusNovos = novos.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+    let okNovos = 0;
+    for (const p of meusNovos) {
+      const r = await testarIpReal(p.id, novos);
+      if (r.ok) okNovos++; else state.dead[p.proxyUrl] = Date.now();
+    }
+    if (okNovos === 0) {
+      // TUDO queimado de verdade: desliga todos os pools -> rede padrao
+      for (const p of meusNovos) { try { await patch(p.id, { isActive: false }); } catch {} }
+      state.stats.fallbackRede++;
+      console.log(`[window ${state.stats.cycles}] NENHUM ip valido -> REDE PADRAO (pools off) ate o proximo ciclo`);
+    } else {
+      console.log(`[window ${state.stats.cycles}] nova janela validada: ${okNovos}/${meusNovos.length} ok`);
+    }
+  } else if (vivos.length === 0 && meus.length > 0) {
+    // edge: 0 vivos mas abaixo do MAX_BAD (pool 1-2) -> tambem cai pra rede padrao
+    for (const p of meus) { try { await patch(p.id, { isActive: false }); } catch {} }
+    state.stats.fallbackRede++;
+    console.log(`[window ${state.stats.cycles}] 0 vivos -> REDE PADRAO`);
+  } else {
+    // normal: garante que so os vivos fiquem ativos, todos os outros off
+    for (const p of todos) {
+      if (typeof p.name === "string" && p.name.startsWith(PREFIX)) {
+        const vivo = vivos.some(v => v.id === p.id);
+        const querAtivo = p.isActive !== false;
+        if (vivo !== querAtivo) { try { await patch(p.id, { isActive: vivo }); } catch {} }
+      }
+    }
+    console.log(`[window ${state.stats.cycles}] ${vivos.length}/${meus.length} vivos (round-robin ativo)`);
   }
 
   saveState();
-  console.log(`[farmer ${cycles}] fim: ${vivos} vivos (+${criados} novos, -${mortos.length + reprovados.length} fora) | criados: ${state.stats.created} | removidos: ${state.stats.removed}`);
 }
 
 (async () => {
-  if (ONCE) { await guardCycle(); process.exit(0); }
+  console.log(`[window] ${WEBSHARE.length} proxies webshare no codigo, janela ${WINDOW_SIZE}, giro ${ROTATE_SEC}s, troca com ${MAX_BAD}+ errados`);
+  if (ONCE) { await ciclo(); process.exit(0); }
   for (;;) {
     const t0 = Date.now();
-    try { await guardCycle(); } catch (e) { console.log(`[farmer] erro no ciclo:`, e.message); saveState(); }
-    const decorrido = Date.now() - t0;
-    await sleep(Math.max(2000, WATCH_SEC * 1000 - decorrido));
+    try { await ciclo(); } catch (e) { console.log(`[window] erro no ciclo:`, e.message); saveState(); }
+    await sleep(Math.max(5000, 30 * 1000 - (Date.now() - t0)));
   }
 })();
