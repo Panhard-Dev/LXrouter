@@ -47,11 +47,13 @@ const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-fre
 const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";     // unica env que costuma ir no deploy
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
 const PREFIX = "auto-";
+const OC_BATCH = Number(process.env.FARM_OC_BATCH || 15);   // membros testados no caminho opencode por ciclo
+const OC_FALHAS = Number(process.env.FARM_OC_FALHAS || 2);  // falhas seguidas ate deletar
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
 const BURNED_RETRY_MS = 5 * 3600 * 1000;  // ip queimado pro opencode volta no ciclo de ~5h
 
-const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
+const state = { dead: {}, burned: {}, ocFails: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
@@ -107,6 +109,25 @@ async function api(method, apiPath, body) {
 async function routerTest(poolId) {
   const res = await api("POST", `/api/proxy-pools/${poolId}/test`);
   return { ok: !!(res.json && res.json.ok), elapsed: (res.json && res.json.elapsedMs) || 0 };
+}
+
+// valida um membro no caminho OPENCODE: os outros pools ficam inativos,
+// a request sai por esse ip especifico; 429/RegionError = ip queimado
+async function validarMembroOpencode(poolId, todosPools) {
+  for (const p of todosPools) {
+    if (p.id !== poolId && p.isActive !== false) {
+      await api("PATCH", `/api/proxy-pools/${p.id}`, { isActive: false });
+    }
+  }
+  await api("PATCH", `/api/proxy-pools/${poolId}`, { isActive: true });
+  const res = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8,
+    messages: [{ role: "user", content: "ok" }] });
+  for (const p of todosPools) {
+    if (p.id !== poolId) { try { await api("PATCH", `/api/proxy-pools/${p.id}`, { isActive: true }); } catch {} }
+  }
+  const m = JSON.stringify(res.json || {});
+  const falha = m.includes("FreeUsageLimitError") || m.includes("RegionError") || m.includes('"status":403');
+  return { ok: !falha, detalhe: falha ? (res.json?.error?.message || "queimado").slice(0, 80) : "ok" };
 }
 
 // baixa uma lista: github via relay primeiro (datacenter leva desafio do cloudflare)
@@ -235,6 +256,51 @@ async function guardCycle() {
   }
   if (mortos.length) console.log(`[farmer ${cycles}] ${mortos.length} error/inativo removidos na hora`);
 
+  // 2.5) VALIDACAO OPENCODE POR MEMBRO: desativa os outros, request pelo router
+  // sai por UM ip especifico; 429/RegionError nesse ip = queimado pro opencode = fora.
+  // (o canario so testa a sessao sorteada; aqui e deterministic por ip)
+  const restantes = mine.filter(p => !mortos.includes(p) && !reprovados.includes(p));
+  if (restantes.length && canary.json && !msg.includes("503")) {
+    let cursor = Number(state.ocCursor || 0);
+    const lote = [];
+    for (let k = 0; k < Math.min(OC_BATCH, restantes.length); k++) {
+      lote.push(restantes[(cursor + k) % restantes.length]);
+    }
+    state.ocCursor = (cursor + lote.length) % Math.max(1, restantes.length);
+
+    // desativa todos os pools auto (outros ficam de fora do sorteio)
+    for (const pool of mine) {
+      if (pool.isActive !== false) await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: false });
+    }
+    let fora = 0;
+    for (const pool of lote) {
+      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: true });
+      const res = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8,
+        messages: [{ role: "user", content: "ok" }] });
+      const m = JSON.stringify(res.json || {});
+      const queimado = m.includes("FreeUsageLimitError") || m.includes("RegionError") || m.includes('"status":403');
+      const px = pool.proxyUrl;
+      if (queimado) {
+        state.ocFails[px] = (state.ocFails[px] || 0) + 1;
+        if (state.ocFails[px] >= OC_FALHAS) {
+          await api("DELETE", "/api/proxy-pools/" + pool.id);
+          state.dead[px] = Date.now();
+          state.stats.removed++;
+          fora++;
+          console.log(`  [oc-fora] ${px} queimado pro opencode (${state.ocFails[px]}x)`);
+        }
+      } else {
+        state.ocFails[px] = 0;
+      }
+      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: false });
+    }
+    // reativa os sobreviventes (PATCH em pool deletado so da 404, inofensivo)
+    for (const pool of mine) {
+      await api("PATCH", `/api/proxy-pools/${pool.id}`, { isActive: true });
+    }
+    if (fora) console.log(`[farmer ${cycles}] validacao opencode: ${fora} ip(s) queimados removidos`);
+  }
+
   // 3) renovacao: caiu abaixo de RENOVAR_PCT% do alvo, repoe ate o alvo
   const alvoMin = Math.floor(POOL_SIZE * RENOVAR_PCT / 100);
   let need = vivos < alvoMin ? POOL_SIZE - vivos : 0;
@@ -250,10 +316,12 @@ async function guardCycle() {
       if (create.status >= 300) continue;
       const newId = (create.json && (create.json.pool?.id || create.json.id)) || null;
       const rt = newId ? await routerTest(newId) : { ok: false };
-      if (rt.ok) { criados++; need--; vivos++; state.stats.created++; console.log(`  [adiciona] ${px} (verificado em ${rt.elapsed}ms)`); }
+      const oc = rt.ok && newId ? await validarMembroOpencode(newId, mine) : { ok: false };
+      if (rt.ok && oc.ok) { criados++; need--; vivos++; state.stats.created++; console.log(`  [adiciona] ${px} (router ${rt.elapsed}ms + opencode ok)`); }
       else {
         if (newId) await api("DELETE", "/api/proxy-pools/" + newId);
-        state.dead[px] = Date.now();
+        if (rt.ok) state.burned[px] = Date.now();  // proxy vivo, mas queimado pro opencode
+        else state.dead[px] = Date.now();
       }
     }
   }
