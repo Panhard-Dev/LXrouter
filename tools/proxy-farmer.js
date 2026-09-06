@@ -16,7 +16,6 @@
 //   FARM_TEST_URL       URL de eco usada no teste (default https://ipv4.webshare.io/)
 //   FARM_STATE_FILE     arquivo de estado (default <DATA_DIR>/proxy-farmer.json)
 
-const { execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -44,10 +43,32 @@ try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } c
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const curl = (args, timeout) => new Promise(resolve => {
-  execFile("curl", ["-s", "-m", String(Math.ceil(timeout / 1000)), ...args], { timeout: timeout + 2000, maxBuffer: 8e6 },
-    (err, stdout) => resolve({ ok: !err, body: stdout || "" }));
-});
+const net = require("net");
+// testar proxy sem curl: CONNECT no alvo HTTPS e ve se o proxy responde 200
+function testProxyConnect(proxyUrl, timeoutMs) {
+  return new Promise(resolve => {
+    let m;
+    try { m = new URL(proxyUrl); } catch { return resolve(null); }
+    const host = m.hostname, port = Number(m.port) || (m.protocol === "https:" ? 443 : 80);
+    const target = new URL(TEST_URL);
+    const socket = net.connect(port, host);
+    let done = false;
+    const finish = r => { if (!done) { done = true; socket.destroy(); resolve(r); } };
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => socket.write(`CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n\r\n`));
+    socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
+    socket.on("error", () => finish(null));
+    socket.on("timeout", () => finish(null));
+  });
+}
+const curl = async (args, timeout) => {
+  // usado so para baixar as listas (HTTPS direto, sem proxy)
+  const url = args.find(a => a.startsWith("http"));
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+    return { ok: res.ok, body: await res.text() };
+  } catch { return { ok: false, body: "" }; }
+};
 
 let cookie = "";
 async function api(method, apiPath, body) {
@@ -63,9 +84,7 @@ async function api(method, apiPath, body) {
 }
 
 async function testProxy(proxyUrl) {
-  const { body } = await curl(["-x", proxyUrl, TEST_URL.replace(/^https:/, "https:")], TIMEOUT_MS);
-  const ip = body.trim();
-  return /^\d{1,3}(\.\d{1,3}){3}/.test(ip) ? ip : null;
+  return testProxyConnect(proxyUrl, TIMEOUT_MS);
 }
 
 // o teste do proprio router e a autoridade: atualiza testStatus/isActive no painel
@@ -121,16 +140,17 @@ async function cycle() {
     let criados = 0;
     const wave = candidatos.slice(0, WAVE);
     const testados = [];
-    let emVoo = 0;
-    await Promise.all(wave.map(px => new Promise(async resolve => {
-      while (emVoo >= 40) await sleep(100);
-      emVoo++;
-      const ip = await testProxy(px);
-      emVoo--;
-      if (ip) testados.push({ px, ip });
-      else state.dead[px] = Date.now();
-      resolve();
-    })));
+    let idx = 0;
+    const worker = async () => {
+      while (idx < wave.length) {
+        const px = wave[idx++];
+        const ip = await Promise.race([testProxy(px), sleep(TIMEOUT_MS + 1500).then(() => null)]);
+        if (ip) testados.push({ px, ip });
+        else state.dead[px] = Date.now();
+      }
+    };
+    await Promise.all(Array.from({ length: 40 }, worker));
+    console.log(`[farmer] onda testada: ${testados.length} vivos de ${wave.length}`);
     for (const { px } of testados) {
       if (criados >= emFalta) break;
       const create = await api("POST", "/api/proxy-pools", { name: PREFIX + px.replace(/^https?:\/\//, ""), proxyUrl: px, isActive: true });
