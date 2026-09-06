@@ -1,22 +1,22 @@
 // Proxy Farmer: mantem o Proxy Pools do 9router sempre cheio de proxies
-// publicos vivos. Vigilancia continua: a cada FARM_WATCH_SEC testa todos os
-// pools "auto-" pelo teste do proprio router; quem falha e deletado na hora
-// e reposto imediatamente. Pools sem o prefixo "auto-" sao intocaveis.
+// publicos vivos, validados pelo teste do proprio router.
 //
-// Uso:
-//   node tools/proxy-farmer.js --once     # um ciclo de vigilancia e sai
-//   node tools/proxy-farmer.js            # vigilancia continua (default)
+// - Vigilancia continua: a cada FARM_WATCH_SEC testa todos os pools "auto-"
+//   pelo router; error/inativo e deletado na hora e reposto.
+// - Colheita: gist (publicada pelo farmer local) + listas publicas filtradas
+//   por pais. github sempre via relay (datacenter leva desafio do cloudflare).
+// - Canario: 1 request minucula pelo router com modelo rapido; 2 canarios 429
+//   seguidos = sessao queimada -> redeploy automatico (nova sessao = nova cota).
+// - Pools sem o prefixo "auto-" sao intocaveis (webshare, relays, manual).
 //
-// Env:
-//   ROUTER_URL          default http://127.0.0.1:20128
-//   ROUTER_PASSWORD     senha do painel (login para a API)
-//   FARM_POOL_SIZE      alvo de proxies vivos (default 12)
-//   FARM_WATCH_SEC      intervalo da vigilancia (default 60)
-//   FARM_SOURCES        URLs de listas publicas, separadas por virgula
-//   FARM_WAVE           candidatos testados por rodada de reposicao (default 400)
-//   FARM_TIMEOUT_MS     timeout por teste (default 9000)
-//   FARM_TEST_URL       alvo do teste (default https://ipv4.webshare.io/)
-//   FARM_STATE_FILE     estado (default <DATA_DIR>/proxy-farmer.json)
+// Env (tudo opcional):
+//   ROUTER_URL / ROUTER_PASSWORD / DATA_DIR / FARM_STATE_FILE
+//   FARM_POOL_SIZE (50) / FARM_WATCH_SEC (30) / FARM_WAVE (400)
+//   FARM_TIMEOUT_MS (9000) / FARM_TEST_URL / FARM_SOURCES
+//   FARM_CANARY_MODEL (oc/ling-3.0-flash-fin-free)
+//   FARM_RENOVAR_PCT (80: repoe quando cair abaixo de 80% do alvo)
+//   FARM_REDEPLOY_KEY + FARM_REDEPLOY_SERVICE (auto-redeploy quando queima)
+//   FARM_RELAYS (relays vercel usados como ponte pras fontes do github)
 
 const net = require("net");
 const fs = require("fs");
@@ -27,47 +27,39 @@ const ROUTER_URL = (process.env.ROUTER_URL || "http://127.0.0.1:20128").replace(
 const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD || "123456";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-farmer.json");
+const GIST_URL = process.env.FARM_GIST_URL || "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw/";
+const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s => s.trim()).filter(Boolean);
 const SOURCES = (process.env.FARM_SOURCES ||
-  "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw," +
+  GIST_URL + "," +
+  "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000," +
   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
-  "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=us,br,gb,ca,de,jp," +
-  "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
-  "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
-  "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
-  "https://www.proxy-list.download/api/v1/get?type=http&anon=elite",
+  "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt," +
+  "https://www.proxy-list.download/api/v1/get?type=http&anon=elite," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/http.txt"
-).split(",").map(s => s.trim()).map(t => {
-  const mm = t.match(/^(?:https?:\/\/)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})(?::([^:@]+):([^@]+))?$/);
-  if (!mm) return t;
-  const [, ip, port, user, pass] = mm;
-  return `http://${user ? `${user}:${pass}@` : ""}${ip}:${port}`;
-}).filter(Boolean);
-const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);  // padrao fixo: 50
-const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 30);  // renovacao rapida
+).split(",").map(s => s.trim()).filter(Boolean);
+const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);   // alvo fixo: 50
+const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 30);   // renovacao rapida
+const RENOVAR_PCT = Number(process.env.FARM_RENOVAR_PCT || 80); // repoe quando cair abaixo de 80% do alvo
 const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
+const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-free";  // rapido
+const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";     // unica env que costuma ir no deploy
+const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
 const PREFIX = "auto-";
-const ehLinhaProxy = l => { const t = (l || "").trim(); return /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t) || /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t); };
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
-const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
-const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-free";  // rapido: valida em ~1s
-// a API key do render NAO vai no codigo (repo publico): seta so ela no env do deploy
-const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
-const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
-const GIST_ID = process.env.FARM_GIST_ID || "f4d5df48748c6be6d66d6794107908f4";
-const GIST_URL = `https://gist.githubusercontent.com/Panhard-Dev/${GIST_ID}/raw/`;
-const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim()).filter(Boolean);
+const BURNED_RETRY_MS = 5 * 3600 * 1000;  // ip queimado pro opencode volta no ciclo de ~5h
 
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
-let lastRedeploy = 0;
-let burnsSeguidos = 0;
-let flushLocal = false;
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const ehLinhaProxy = l => {
+  const t = (l || "").trim();
+  return /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t) || /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t);
+};
 const target = new URL(TEST_URL);
 
 // teste de proxy sem curl: CONNECT no alvo e ve se responde 200
@@ -117,35 +109,43 @@ async function routerTest(poolId) {
   return { ok: !!(res.json && res.json.ok), elapsed: (res.json && res.json.elapsedMs) || 0 };
 }
 
-let harvestCache = { at: 0, list: [] };
-async function harvestCandidates(emPool) {
-  // fontes que ja sao proxies diretos (ip:porta ou http://ip:porta) entram como candidatos
-  const ehProxyDireto = s => { try { const u = new URL(s); return /^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) && (u.pathname === "/" || u.pathname === ""); } catch { return false; } };
-  const diretos = SOURCES.filter(ehProxyDireto);
-  if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
-    return [...diretos, ...harvestCache.list].filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
-      !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS));
-  }
-  const found = new Set(diretos);
-  const baixarLista = async (src) => {
-    // direto; se vier vazio, tenta via relays (burla desafio de datacenter)
-    try {
-      const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
-      const body = await res.text();
-      if (body.split("\n").some(ehLinhaProxy)) return body;
-    } catch {}
+// baixa uma lista: github via relay primeiro (datacenter leva desafio do cloudflare)
+const temProxy = b => (b || "").split("\n").some(ehLinhaProxy);
+const ehGithub = u => /gist\.githubusercontent\.com|raw\.githubusercontent\.com/.test(u);
+const ehLinha = b => (b || "").split("\n").some(ehLinhaProxy);
+async function baixarLista(src) {
+  const ordem = ehGithub(src) ? ["relay", "direto"] : ["direto", "relay"];
+  for (const modo of ordem) {
+    if (modo === "direto") {
+      try {
+        const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
+        const body = await res.text();
+        if (ehLinha(body)) return body;
+      } catch {}
+      continue;
+    }
     for (const relay of RELAYS) {
       try {
         const res = await fetch(relay, { headers: { "x-relay-target": src }, signal: AbortSignal.timeout(20000) });
         const body = await res.text();
-        if (body.split("\n").some(l => /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(l.trim()))) {
-          console.log(`[farmer] ${src.split("/")[2]} veio via relay (${relay.split("//")[1].slice(0, 22)}...)`);
-          return body;
-        }
+        if (ehLinha(body)) { console.log(`[farmer] lista via relay: ${src.split("/")[2]}`); return body; }
       } catch {}
     }
-    return "";
-  };
+  }
+  return "";
+}
+
+let harvestCache = { at: 0, list: [] };
+const vivoAgora = (emPool, px) => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
+  !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS);
+async function harvestCandidates(emPool) {
+  const diretos = SOURCES.filter(s => {
+    try { const u = new URL(s); return /^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) && (u.pathname === "/" || u.pathname === ""); } catch { return false; }
+  });
+  if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
+    return [...diretos, ...harvestCache.list].filter(px => vivoAgora(emPool, px));
+  }
+  const found = new Set(diretos);
   for (const src of SOURCES) {
     if (diretos.includes(src)) continue;
     const body = await baixarLista(src);
@@ -158,11 +158,10 @@ async function harvestCandidates(emPool) {
     console.log(`[farmer] fonte ${(src.split("/")[2] || src).slice(0, 26)}: +${n}`);
   }
   harvestCache = { at: Date.now(), list: [...found] };
-  return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
-      !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS));
+  return [...diretos, ...harvestCache.list].filter(px => vivoAgora(emPool, px));
 }
 
-// onda de testes com worker-pool: impossivel travar o ciclo
+// onda de testes com worker-pool: sempre termina
 async function testWave(candidates) {
   const passers = [];
   let idx = 0;
@@ -179,57 +178,44 @@ async function testWave(candidates) {
 }
 
 let cycles = 0;
+let burnsSeguidos = 0;
+let lastRedeploy = 0;
 async function guardCycle() {
   cycles++;
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
   if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
 
-  // canario: o opencode ta recusando (FreeUsageLimitError)? a SESSAO queimou.
-  // no render a sessao nasce no boot -> redeploy = sessao nova = cota nova.
-  const canary = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 16,
-    messages: [{ role: "user", content: "ok" }] });
+  // canario: request minucula pelo router com modelo rapido
+  const canary = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8, messages: [{ role: "user", content: "ok" }] });
   const msg = JSON.stringify(canary.json || {});
-  const queimado = msg.includes("FreeUsageLimitError");
-  if (queimado) {
+  if (msg.includes("FreeUsageLimitError")) {
     burnsSeguidos++;
     console.log(`[farmer ${cycles}] CANARIO 429 (${burnsSeguidos} seguidos) - sessao queimada`);
     if (REDEPLOY_KEY && REDEPLOY_SERVICE && burnsSeguidos >= 2 && Date.now() - lastRedeploy > 10 * 60 * 1000) {
-      const res = await fetch(`https://api.render.com/v1/services/${REDEPLOY_SERVICE}/deploys`, {
-        method: "POST",
-        headers: { "authorization": `Bearer ${REDEPLOY_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify({ clearCache: "do_not_clear" }),
-      });
-      lastRedeploy = Date.now();
-      state.stats.redeploys++;
-      console.log(`[farmer ${cycles}] REDEPLOY disparado (${res.status}) - nova sessao = cota nova; pools serao replantados no boot`);
-      saveState();
-      process.exit(0); // o container vai morer no redeploy de qualquer forma
+      try {
+        const res = await fetch(`https://api.render.com/v1/services/${REDEPLOY_SERVICE}/deploys`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${REDEPLOY_KEY}`, "content-type": "application/json" },
+          body: JSON.stringify({ clearCache: "do_not_clear" }),
+        });
+        lastRedeploy = Date.now();
+        state.stats.redeploys++;
+        console.log(`[farmer ${cycles}] REDEPLOY disparado (${res.status}) - nova sessao = cota nova`);
+      } catch (e) { console.log(`[farmer ${cycles}] redeploy falhou:`, e.message); }
     }
-    if (!REDEPLOY_KEY) {
-      flushLocal = true;
-      console.log(`[farmer ${cycles}] FLUSH LOCAL: renovando todos os IPs (lote fresco = cota nova)`);
-    }
-    // com ou sem queima, planta e poda normal
+  } else {
+    burnsSeguidos = 0;
   }
-  burnsSeguidos = burnsSeguidos >= 2 ? burnsSeguidos : 0;
 
   const list = await api("GET", "/api/proxy-pools");
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
-  let mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
 
-  if (flushLocal && mine.length) {
-    for (const pool of mine) {
-      await api("DELETE", "/api/proxy-pools/" + pool.id);
-      state.burned[pool.proxyUrl] = Date.now();
-    }
-    console.log(`[farmer ${cycles}] flush: ${mine.length} IPs queimados pro opencode removidos`);
-    mine = [];
-  }
-
-  // 1) quem o router ja marcou error/inativo: fora IMEDIATO (sem re-teste)
-  // 2) os demais: re-verifica pelo router em paralelo (10 por vez); falhou, fora
+  // 1) error/inativo que o router ja marcou: fora imediato
   const mortos = mine.filter(p => p.testStatus === "error" || p.isActive === false);
   const aTestar = mine.filter(p => !mortos.includes(p));
+
+  // 2) re-verifica os demais pelo router em paralelo (10 por vez); falhou, fora
   let vivos = 0;
   let idx = 0;
   const reprovados = [];
@@ -249,8 +235,8 @@ async function guardCycle() {
   }
   if (mortos.length) console.log(`[farmer ${cycles}] ${mortos.length} error/inativo removidos na hora`);
 
-  // 2) renovacao: perdeu 20% do alvo (ex: 50 -> caiu pra 40) repoe ate o alvo
-  const alvoMin = Math.floor(POOL_SIZE * 0.8);
+  // 3) renovacao: caiu abaixo de RENOVAR_PCT% do alvo, repoe ate o alvo
+  const alvoMin = Math.floor(POOL_SIZE * RENOVAR_PCT / 100);
   let need = vivos < alvoMin ? POOL_SIZE - vivos : 0;
   let criados = 0;
   if (need > 0) {
@@ -272,36 +258,24 @@ async function guardCycle() {
     }
   }
 
-  // 3) Rotation Strategy = random em todos os providers, sempre
+  // 4) Rotation Strategy = random em todos os providers, sempre
   const st = await api("GET", "/api/settings");
   const settings = st.json || {};
   const strategies = { ...(settings.providerStrategies || {}) };
   let mudou = false;
-  const FARM_PROVIDER_ALIAS = process.env.FARM_PROVIDER_ALIAS || "opencode";
-  if (!strategies[FARM_PROVIDER_ALIAS] || typeof strategies[FARM_PROVIDER_ALIAS] !== "object") strategies[FARM_PROVIDER_ALIAS] = {};
-  strategies[FARM_PROVIDER_ALIAS].rotateStrategy = "random";
-  mudou = true;
+  const ALIAS = process.env.FARM_PROVIDER_ALIAS || "opencode";
+  if (!strategies[ALIAS] || typeof strategies[ALIAS] !== "object") strategies[ALIAS] = {};
+  strategies[ALIAS].rotateStrategy = "random";
   for (const alias of Object.keys(strategies)) {
     if (strategies[alias].rotateStrategy !== "random") { strategies[alias].rotateStrategy = "random"; mudou = true; }
   }
-  if (mudou) {
-    await api("PATCH", "/api/settings", { providerStrategies: strategies });
-    console.log(`[farmer ${cycles}] rotateStrategy=random aplicado em:`, Object.keys(strategies).join(", "));
+  await api("PATCH", "/api/settings", { providerStrategies: strategies });
+  if (mudou || strategies[ALIAS].rotateStrategy === "random") {
+    console.log(`[farmer ${cycles}] rotateStrategy=random garantido em: ${Object.keys(strategies).join(", ")}`);
   }
 
   saveState();
-  console.log(`[farmer ${cycles}] fim: ${vivos} vivos (+${criados} novos, -${mortos.length} mortos) | criados: ${state.stats.created} | removidos: ${state.stats.removed}`);
-
-  // publica os vivos numa gist pros outros deploys consumirem (so onde tem gh CLI)
-  if (GIST_ID && vivos.length) {
-    const lista = mine.filter(p => !mortos.includes(p)).map(p => p.proxyUrl).join("\n");
-    const { execFile } = require("child_process");
-    const tmp = path.join(os.tmpdir(), "lxr-proxies.txt");
-    fs.writeFileSync(tmp, lista);
-    execFile("gh", ["gist", "edit", GIST_ID, "-f", `proxies.txt=${tmp}`], { timeout: 30000 }, (err) => {
-      console.log(err ? `[farmer] gist update falhou: ${err.message}` : "[farmer] gist atualizado com os vivos");
-    });
-  }
+  console.log(`[farmer ${cycles}] fim: ${vivos} vivos (+${criados} novos, -${mortos.length + reprovados.length} fora) | criados: ${state.stats.created} | removidos: ${state.stats.removed}`);
 }
 
 (async () => {
