@@ -40,7 +40,7 @@ const SOURCES = (process.env.FARM_SOURCES ||
   return `http://${user ? `${user}:${pass}@` : ""}${ip}:${port}`;
 }).filter(Boolean);
 const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);  // padrao fixo: 50
-const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 60);
+const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 30);  // renovacao rapida
 const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
@@ -49,7 +49,7 @@ const ehLinhaProxy = l => { const t = (l || "").trim(); return /^https?:\/\/\d{1
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
 const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
-const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/muse-spark-1.3-contributor-free(xhigh)";
+const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-free";  // rapido: valida em ~1s
 // a API key do render NAO vai no codigo (repo publico): seta so ela no env do deploy
 const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
@@ -201,14 +201,27 @@ async function guardCycle() {
       saveState();
       process.exit(0); // o container vai morer no redeploy de qualquer forma
     }
-    if (!REDEPLOY_KEY) console.log(`[farmer ${cycles}] (sem FARM_REDEPLOY_KEY: aguardando reset natural de ~5h)`);
-    // mesmo queimado, PLANTA e PODA normal: os pools ficam prontos pro reset
+    if (!REDEPLOY_KEY) {
+      flushLocal = true;
+      console.log(`[farmer ${cycles}] FLUSH LOCAL: renovando todos os IPs (lote fresco = cota nova)`);
+    }
+    // com ou sem queima, planta e poda normal
   }
-  burnsSeguidos = 0;
+  burnsSeguidos = burnsSeguidos >= 2 ? burnsSeguidos : 0;
 
   const list = await api("GET", "/api/proxy-pools");
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
-  const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  let mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  let flushLocal = false;
+
+  if (flushLocal && mine.length) {
+    for (const pool of mine) {
+      await api("DELETE", "/api/proxy-pools/" + pool.id);
+      state.burned[pool.proxyUrl] = Date.now();
+    }
+    console.log(`[farmer ${cycles}] flush: ${mine.length} IPs queimados pro opencode removidos`);
+    mine = [];
+  }
 
   // 1) quem o router ja marcou error/inativo: fora IMEDIATO (sem re-teste)
   // 2) os demais: re-verifica pelo router em paralelo (10 por vez); falhou, fora
