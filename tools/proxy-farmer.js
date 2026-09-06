@@ -68,7 +68,11 @@ function testProxyConnect(proxyUrl, timeoutMs) {
     let done = false;
     const finish = r => { if (!done) { done = true; socket.destroy(); resolve(r); } };
     socket.setTimeout(timeoutMs);
-    socket.on("connect", () => socket.write(`CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n\r\n`));
+    socket.on("connect", () => {
+      let req = `CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n`;
+      if (m.username) req += `Proxy-Authorization: Basic ${Buffer.from(decodeURIComponent(m.username) + ":" + decodeURIComponent(m.password)).toString("base64")}\r\n`;
+      socket.write(req + "\r\n");
+    });
     socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
     socket.on("error", () => finish(null));
     socket.on("timeout", () => finish(null));
