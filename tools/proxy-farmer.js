@@ -192,6 +192,10 @@ async function guardCycle() {
   const settings = st.json || {};
   const strategies = { ...(settings.providerStrategies || {}) };
   let mudou = false;
+  const FARM_PROVIDER_ALIAS = process.env.FARM_PROVIDER_ALIAS || "opencode";
+  if (!strategies[FARM_PROVIDER_ALIAS] || typeof strategies[FARM_PROVIDER_ALIAS] !== "object") strategies[FARM_PROVIDER_ALIAS] = {};
+  strategies[FARM_PROVIDER_ALIAS].rotateStrategy = "random";
+  mudou = true;
   for (const alias of Object.keys(strategies)) {
     if (strategies[alias].rotateStrategy !== "random") { strategies[alias].rotateStrategy = "random"; mudou = true; }
   }
