@@ -32,6 +32,7 @@ const SOURCES = (process.env.FARM_SOURCES ||
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
 ).split(",").map(s => s.trim()).filter(Boolean);
 const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 12);
+const WAVE = Number(process.env.FARM_WAVE || 300);
 const INTERVAL_MIN = Number(process.env.FARM_INTERVAL_MIN || 30);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
@@ -67,6 +68,12 @@ async function testProxy(proxyUrl) {
   return /^\d{1,3}(\.\d{1,3}){3}/.test(ip) ? ip : null;
 }
 
+// o teste do proprio router e a autoridade: atualiza testStatus/isActive no painel
+async function routerTest(poolId) {
+  const res = await api("POST", `/api/proxy-pools/${poolId}/test`);
+  return { ok: !!(res.json && res.json.ok), elapsed: (res.json && res.json.elapsedMs) || 0 };
+}
+
 async function harvest() {
   const found = new Set();
   for (const src of SOURCES) {
@@ -90,16 +97,16 @@ async function cycle() {
   const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
   console.log(`[farmer] ciclo ${state.stats.cycles}: ${all.length} pools no router, ${mine.length} sao meus (auto-)`);
 
-  // testa os meus, mata os mortos
+  // testa os meus PELO ROUTER (autoridade) — falhou nele, fora
   let vivos = [];
   for (const pool of mine) {
-    const ip = await testProxy(pool.proxyUrl);
-    if (ip) vivos.push(pool);
+    const res = await routerTest(pool.id);
+    if (res.ok) vivos.push(pool);
     else {
       await api("DELETE", "/api/proxy-pools/" + pool.id);
       state.dead[pool.proxyUrl] = Date.now();
       state.stats.removed++;
-      console.log(`  [remove] morto: ${pool.proxyUrl}`);
+      console.log(`  [remove] reprovou no router: ${pool.proxyUrl}`);
     }
   }
 
@@ -112,7 +119,7 @@ async function cycle() {
       !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
     console.log(`[farmer] faltam ${emFalta}; colhidos ${candidatos.length} candidatos`);
     let criados = 0;
-    const wave = candidatos.slice(0, 120);
+    const wave = candidatos.slice(0, WAVE);
     const testados = [];
     let emVoo = 0;
     await Promise.all(wave.map(px => new Promise(async resolve => {
@@ -127,9 +134,19 @@ async function cycle() {
     for (const { px } of testados) {
       if (criados >= emFalta) break;
       const create = await api("POST", "/api/proxy-pools", { name: PREFIX + px.replace(/^https?:\/\//, ""), proxyUrl: px, isActive: true });
-      if (create.status < 300) { criados++; state.stats.created++; vivos.push({ proxyUrl: px }); console.log(`  [adiciona] ${px}`); }
+      if (create.status >= 300) continue;
+      const newId = (create.json && (create.json.pool?.id || create.json.id)) || null;
+      const rt = newId ? await routerTest(newId) : { ok: false };
+      if (rt.ok) {
+        criados++; state.stats.created++; vivos.push({ proxyUrl: px });
+        console.log(`  [adiciona] ${px} (verificado pelo router em ${rt.elapsed}ms)`);
+      } else {
+        if (newId) await api("DELETE", "/api/proxy-pools/" + newId);
+        state.dead[px] = Date.now();
+        console.log(`  [descarta] reprovou no teste do router: ${px}`);
+      }
     }
-    for (const { px } of wave.slice(0, 120)) if (!testados.find(t => t.px === px)) state.dead[px] = state.dead[px] || (Date.now() - DEAD_RETRY_MS * 2);
+    for (const { px } of wave) if (!testados.find(t => t.px === px)) state.dead[px] = state.dead[px] || (Date.now() - DEAD_RETRY_MS * 2);
   }
 
   // garante round-robin no provider (aponta pra um pool meu vivo)
