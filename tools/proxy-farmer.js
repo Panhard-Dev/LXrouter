@@ -30,7 +30,7 @@ const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-far
 const SOURCES = (process.env.FARM_SOURCES ||
   "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw," +
   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
-  "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all," +
+  "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=us,br,gb,ca,de,jp," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
 ).split(",").map(s => s.trim()).filter(Boolean);
@@ -40,6 +40,7 @@ const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const PREFIX = "auto-";
+const ehLinhaProxy = l => { const t = (l || "").trim(); return /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t) || /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(t); };
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
 const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
@@ -122,7 +123,7 @@ async function harvestCandidates(emPool) {
     try {
       const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
       const body = await res.text();
-      if (body.split("\n").some(l => /^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(l.trim()))) return body;
+      if (body.split("\n").some(ehLinhaProxy)) return body;
     } catch {}
     for (const relay of RELAYS) {
       try {
@@ -141,8 +142,9 @@ async function harvestCandidates(emPool) {
     const body = await baixarLista(src);
     let n = 0;
     for (const line of body.split("\n")) {
-      const px = line.trim();
-      if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) { found.add("http://" + px); n++; }
+      if (!ehLinhaProxy(line)) continue;
+      const px = line.trim().startsWith("http") ? line.trim() : "http://" + line.trim();
+      found.add(px); n++;
     }
     console.log(`[farmer] fonte ${src.split("/")[2].slice(0, 26)}: +${n}`);
   }
