@@ -44,6 +44,8 @@ const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/ling-3.0-flash-fin-free";  // rapido
+// modelos pesados: queimam antes do ling, ento entram no canario tambem
+const HEAVY_CANARY_MODELS = (process.env.FARM_HEAVY_CANARY || "oc/muse-spark-1.2-contributor-free(xhigh)").split(",").map(s => s.trim()).filter(Boolean);
 const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";     // unica env que costuma ir no deploy
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
 const PREFIX = "auto-";
@@ -207,10 +209,21 @@ async function guardCycle() {
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
   if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
 
-  // canario: request minucula pelo router com modelo rapido
-  const canary = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 8, messages: [{ role: "user", content: "ok" }] });
-  const msg = JSON.stringify(canary.json || {});
-  if (msg.includes("FreeUsageLimitError")) {
+  // canario: request minucula pelo router. A cota queima POR MODELO: o muse
+  // (pesado) queima bem antes do ling (leve). Testa os dois; qualquer um 429
+  // conta como burn - senao o redeploy nunca dispara quando so o muse queima.
+  const canaryModels = [CANARY_MODEL, ...HEAVY_CANARY_MODELS.filter(m => m && m !== CANARY_MODEL)];
+  let canaryMsg = "";
+  let any429 = false;
+  for (const cm of canaryModels) {
+    const c = await api("POST", "/v1/chat/completions", { model: cm, stream: false, max_tokens: 2048, messages: [{ role: "user", content: "ok" }] });
+    const m = JSON.stringify(c.json || {});
+    canaryMsg += m;
+    if (m.includes("FreeUsageLimitError")) any429 = true;
+  }
+  const canary = { json: { error: any429 ? { message: "FreeUsageLimitError" } : {} } };
+  const msg = canaryMsg;
+  if (any429) {
     burnsSeguidos++;
     console.log(`[farmer ${cycles}] CANARIO 429 (${burnsSeguidos} seguidos) - sessao queimada`);
     if (REDEPLOY_KEY && REDEPLOY_SERVICE && burnsSeguidos >= 2 && Date.now() - lastRedeploy > 10 * 60 * 1000) {
