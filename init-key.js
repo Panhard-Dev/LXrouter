@@ -1,9 +1,10 @@
 // Planta a FIXED_API_KEY (env) no banco do 9router, sobrevivendo a redeploys.
 const { DatabaseSync } = require("node:sqlite");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
-const dataDir = process.env.DATA_DIR || "/root/.9router";
+const dataDir = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const key = (process.env.FIXED_API_KEY || "").trim();
 const dbPath = path.join(dataDir, "db", "data.sqlite");
 
