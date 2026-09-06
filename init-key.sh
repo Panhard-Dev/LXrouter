@@ -18,8 +18,8 @@ if [ "${FARM_ENABLED:-1}" = "1" ]; then
   ROUTER_URL="http://127.0.0.1:${PORT}" \
   ROUTER_PASSWORD="${ROUTER_PASSWORD:-${INITIAL_PASSWORD:-123456}}" \
   DATA_DIR="${DATA_DIR:-$HOME/.9router}" \
-    "$NODE_BIN" tools/proxy-farmer.js > "${DATA_DIR:-$HOME/.9router}/proxy-farmer.log" 2>&1 &
-  echo "[init-key] proxy farmer ligado (FARM_ENABLED=1)"
+    "$NODE_BIN" tools/proxy-farmer.js &
+  echo "[init-key] proxy farmer ligado (FARM_ENABLED=1) - logs abaixo com [farmer]"
 fi
 
 wait $SRV
