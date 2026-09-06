@@ -28,7 +28,7 @@ const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD || "123456";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-farmer.json");
 const SOURCES = (process.env.FARM_SOURCES ||
-  "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw/proxies.txt," +
+  "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw," +
   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
@@ -115,11 +115,13 @@ async function harvestCandidates(emPool) {
     try {
       const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
       const body = await res.text();
+      let n = 0;
       for (const line of body.split("\n")) {
         const px = line.trim();
-        if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) found.add("http://" + px);
+        if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) { found.add("http://" + px); n++; }
       }
-    } catch {}
+      console.log(`[farmer] fonte ${src.split("/")[2]}: +${n}`);
+    } catch (e) { console.log(`[farmer] fonte ${src.split("/")[2]} FALHOU: ${e.message}`); }
   }
   harvestCache = { at: Date.now(), list: [...found] };
   return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
