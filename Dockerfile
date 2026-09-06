@@ -6,6 +6,7 @@ COPY package.json cli.js LICENSE README.md ./
 COPY src ./src
 COPY hooks ./hooks
 COPY app ./app
+COPY init-key.sh init-key.js ./
 
 RUN npm install --omit=dev
 
@@ -20,4 +21,4 @@ VOLUME ["/root/.9router"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:20128').then(r=>process.exit(0)).catch(()=>process.exit(1))"
 
-CMD ["node", "--dns-result-order=ipv4first", "--max-old-space-size=6144", "app/custom-server.js"]
+CMD ["./init-key.sh"]
