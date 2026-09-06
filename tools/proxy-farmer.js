@@ -149,21 +149,26 @@ async function cycle() {
     for (const { px } of wave) if (!testados.find(t => t.px === px)) state.dead[px] = state.dead[px] || (Date.now() - DEAD_RETRY_MS * 2);
   }
 
-  // garante round-robin no provider (aponta pra um pool meu vivo)
+  // Rotation Strategy = random em TODOS os providers, sempre
+  const st = await api("GET", "/api/settings");
+  const settings = st.json || {};
+  const strategies = { ...(settings.providerStrategies || {}) };
+  let mudou = false;
+  for (const alias of Object.keys(strategies)) {
+    if (strategies[alias].rotateStrategy !== "random") { strategies[alias].rotateStrategy = "random"; mudou = true; }
+  }
+  if (mudou) {
+    await api("PATCH", "/api/settings", { providerStrategies: strategies });
+    console.log("[farmer] rotateStrategy=random aplicado em:", Object.keys(strategies).join(", "));
+  }
   if (vivos.length) {
-    const st = await api("GET", "/api/settings");
-    const settings = st.json || {};
-    const strategies = { ...(settings.providerStrategies || {}) };
-    for (const alias of Object.keys(strategies)) {
-      if (!strategies[alias].proxyPoolId) delete strategies[alias].proxyPoolId;
-    }
     const alvo = mine.find(p => vivos.some(v => v.id === p.id));
     const ref = alvo || vivos[0];
     const aliasPadrao = process.env.FARM_PROVIDER_ALIAS;
     if (aliasPadrao) {
-      strategies[aliasPadrao] = { ...(strategies[aliasPadrao] || {}), proxyPoolId: (alvo || vivos.find(v => v.id) || {}).id || ref.id, rotateStrategy: "round-robin" };
+      strategies[aliasPadrao] = { ...(strategies[aliasPadrao] || {}), proxyPoolId: (alvo || vivos.find(v => v.id) || {}).id || ref.id, rotateStrategy: "random" };
       await api("PATCH", "/api/settings", { providerStrategies: strategies });
-      console.log(`[farmer] provider '${aliasPadrao}' -> pool ${ref.id} (round-robin)`);
+      console.log(`[farmer] provider '${aliasPadrao}' -> pool ${ref.id} (random)`);
     }
   }
 
