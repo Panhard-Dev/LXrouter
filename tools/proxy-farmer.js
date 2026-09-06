@@ -94,11 +94,14 @@ async function routerTest(poolId) {
 
 let harvestCache = { at: 0, list: [] };
 async function harvestCandidates(emPool) {
+  // fontes que ja sao proxies diretos (ip:porta ou http://ip:porta) entram como candidatos
+  const diretos = SOURCES.filter(s => /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(s));
   if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
-    return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
+    return [...diretos, ...harvestCache.list].filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
   }
-  const found = new Set();
+  const found = new Set(diretos);
   for (const src of SOURCES) {
+    if (diretos.includes(src)) continue;
     try {
       const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
       const body = await res.text();
