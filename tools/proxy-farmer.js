@@ -41,6 +41,7 @@ const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const PREFIX = "auto-";
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
+let errSample = 0;
 
 const state = { dead: {}, stats: { cycles: 0, created: 0, removed: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
@@ -61,8 +62,8 @@ function testProxyConnect(proxyUrl, timeoutMs) {
     socket.setTimeout(timeoutMs);
     socket.on("connect", () => socket.write(`CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1\r\nHost: ${target.hostname}:${target.port || 443}\r\n\r\n`));
     socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
-    socket.on("error", () => finish(null));
-    socket.on("timeout", () => finish(null));
+    socket.on("error", e => { if (errSample < 25) { errSample++; console.log(`[debug-erro] ${proxyUrl} -> ${e.code || e.message}`); } finish(null); });
+    socket.on("timeout", () => { if (errSample < 25 && !done) { errSample++; console.log(`[debug-timeout] ${proxyUrl}`); } finish(null); });
     socket.on("close", () => finish(null));
   });
 }
