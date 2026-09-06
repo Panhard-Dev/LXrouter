@@ -43,8 +43,13 @@ const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
 const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
 const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/muse-spark-1.3-contributor-free(xhigh)";
+const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
+const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
+const GIST_ID = process.env.FARM_GIST_ID || "";
 
-const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0 } };
+const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
+let lastRedeploy = 0;
+let burnsSeguidos = 0;
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
@@ -141,25 +146,35 @@ async function guardCycle() {
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
   if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
 
-  // canario: o opencode ta recusando o pool atual com FreeUsageLimitError?
+  // canario: o opencode ta recusando (FreeUsageLimitError)? a SESSAO queimou.
+  // no render a sessao nasce no boot -> redeploy = sessao nova = cota nova.
   const canary = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 16,
     messages: [{ role: "user", content: "ok" }] });
   const msg = JSON.stringify(canary.json || {});
-  let queimado = msg.includes("FreeUsageLimitError");
-  if (queimado) console.log(`[farmer ${cycles}] CANARIO 429: cota do IP(es) atual queimada -> renovando todos os auto- agora`);
+  const queimado = msg.includes("FreeUsageLimitError");
+  if (queimado) {
+    burnsSeguidos++;
+    console.log(`[farmer ${cycles}] CANARIO 429 (${burnsSeguidos} seguidos) - sessao queimada`);
+    if (REDEPLOY_KEY && REDEPLOY_SERVICE && burnsSeguidos >= 2 && Date.now() - lastRedeploy > 10 * 60 * 1000) {
+      const res = await fetch(`https://api.render.com/v1/services/${REDEPLOY_SERVICE}/deploys`, {
+        method: "POST",
+        headers: { "authorization": `Bearer ${REDEPLOY_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ clearCache: "do_not_clear" }),
+      });
+      lastRedeploy = Date.now();
+      state.stats.redeploys++;
+      console.log(`[farmer ${cycles}] REDEPLOY disparado (${res.status}) - nova sessao = cota nova; pools serao replantados no boot`);
+      saveState();
+      process.exit(0); // o container vai morer no redeploy de qualquer forma
+    }
+    if (!REDEPLOY_KEY) console.log(`[farmer ${cycles}] (sem FARM_REDEPLOY_KEY: aguardando reset natural de ~5h)`);
+    return; // sessao queimada domina: nao poda nem replante neste ciclo
+  }
+  burnsSeguidos = 0;
 
   const list = await api("GET", "/api/proxy-pools");
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
-  let mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
-  if (queimado && mine.length) {
-    for (const pool of mine) {
-      await api("DELETE", "/api/proxy-pools/" + pool.id);
-      state.burned[pool.proxyUrl] = Date.now();
-      state.stats.removed++;
-    }
-    console.log(`[farmer ${cycles}] flush: ${mine.length} pools queimados removidos, replantando frescos`);
-    mine = [];
-  }
+  const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
 
   // 1) quem o router ja marcou error/inativo: fora IMEDIATO (sem re-teste)
   // 2) os demais: re-verifica pelo router em paralelo (10 por vez); falhou, fora
@@ -226,6 +241,17 @@ async function guardCycle() {
 
   saveState();
   console.log(`[farmer ${cycles}] fim: ${vivos} vivos (+${criados} novos, -${mortos.length} mortos) | criados: ${state.stats.created} | removidos: ${state.stats.removed}`);
+
+  // publica os vivos numa gist pros outros deploys consumirem (so onde tem gh CLI)
+  if (GIST_ID && vivos.length) {
+    const lista = mine.filter(p => !mortos.includes(p)).map(p => p.proxyUrl).join("\n");
+    const { execFile } = require("child_process");
+    const tmp = path.join(os.tmpdir(), "lxr-proxies.txt");
+    fs.writeFileSync(tmp, lista);
+    execFile("gh", ["gist", "edit", GIST_ID, "-f", `proxies.txt=${tmp}`], { timeout: 30000 }, (err) => {
+      console.log(err ? `[farmer] gist update falhou: ${err.message}` : "[farmer] gist atualizado com os vivos");
+    });
+  }
 }
 
 (async () => {
