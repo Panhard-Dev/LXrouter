@@ -14,7 +14,7 @@ done
 sleep 2
 "$NODE_BIN" --experimental-sqlite init-key.js || echo "[init-key] falhou ao plantar a key (seguindo sem ela)"
 
-if [ "${FARM_ENABLED:-0}" = "1" ]; then
+if [ "${FARM_ENABLED:-1}" = "1" ]; then
   ROUTER_URL="http://127.0.0.1:${PORT}" \
   ROUTER_PASSWORD="${ROUTER_PASSWORD:-${INITIAL_PASSWORD:-123456}}" \
   DATA_DIR="${DATA_DIR:-$HOME/.9router}" \
