@@ -1,21 +1,24 @@
-// Proxy Farmer: colhe proxies públicos grátis, testa, e mantém o Proxy Pools
-// do 9router sempre com N proxies vivos. Pools gerenciados usam o prefixo
-// "auto-" — tudo que não for "auto-" (Webshare, relays) é intocável.
+// Proxy Farmer: mantem o Proxy Pools do 9router sempre cheio de proxies
+// publicos vivos. Vigilancia continua: a cada FARM_WATCH_SEC testa todos os
+// pools "auto-" pelo teste do proprio router; quem falha e deletado na hora
+// e reposto imediatamente. Pools sem o prefixo "auto-" sao intocaveis.
 //
 // Uso:
-//   node tools/proxy-farmer.js --once     # um ciclo e sai
-//   node tools/proxy-farmer.js            # loop contínuo (FARM_INTERVAL_MIN)
+//   node tools/proxy-farmer.js --once     # um ciclo de vigilancia e sai
+//   node tools/proxy-farmer.js            # vigilancia continua (default)
 //
 // Env:
 //   ROUTER_URL          default http://127.0.0.1:20128
 //   ROUTER_PASSWORD     senha do painel (login para a API)
-//   FARM_SOURCES        URLs de listas, separadas por vírgula
-//   FARM_POOL_SIZE      alvo de proxies vivos no pool (default 12)
-//   FARM_INTERVAL_MIN   intervalo entre ciclos no modo loop (default 30)
-//   FARM_TIMEOUT_MS     timeout de teste por proxy (default 9000)
-//   FARM_TEST_URL       URL de eco usada no teste (default https://ipv4.webshare.io/)
-//   FARM_STATE_FILE     arquivo de estado (default <DATA_DIR>/proxy-farmer.json)
+//   FARM_POOL_SIZE      alvo de proxies vivos (default 12)
+//   FARM_WATCH_SEC      intervalo da vigilancia (default 60)
+//   FARM_SOURCES        URLs de listas publicas, separadas por virgula
+//   FARM_WAVE           candidatos testados por rodada de reposicao (default 400)
+//   FARM_TIMEOUT_MS     timeout por teste (default 9000)
+//   FARM_TEST_URL       alvo do teste (default https://ipv4.webshare.io/)
+//   FARM_STATE_FILE     estado (default <DATA_DIR>/proxy-farmer.json)
 
+const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -31,27 +34,28 @@ const SOURCES = (process.env.FARM_SOURCES ||
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
 ).split(",").map(s => s.trim()).filter(Boolean);
 const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 12);
-const WAVE = Number(process.env.FARM_WAVE || 300);
-const INTERVAL_MIN = Number(process.env.FARM_INTERVAL_MIN || 30);
+const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 60);
+const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
 const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const PREFIX = "auto-";
 const ONCE = process.argv.includes("--once");
+const DEAD_RETRY_MS = 24 * 3600 * 1000;
 
 const state = { dead: {}, stats: { cycles: 0, created: 0, removed: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const net = require("net");
-// testar proxy sem curl: CONNECT no alvo HTTPS e ve se o proxy responde 200
+const target = new URL(TEST_URL);
+
+// teste de proxy sem curl: CONNECT no alvo e ve se responde 200
 function testProxyConnect(proxyUrl, timeoutMs) {
   return new Promise(resolve => {
     let m;
     try { m = new URL(proxyUrl); } catch { return resolve(null); }
-    const host = m.hostname, port = Number(m.port) || (m.protocol === "https:" ? 443 : 80);
-    const target = new URL(TEST_URL);
-    const socket = net.connect(port, host);
+    const port = Number(m.port) || (m.protocol === "https:" ? 443 : 80);
+    const socket = net.connect(port, m.hostname);
     let done = false;
     const finish = r => { if (!done) { done = true; socket.destroy(); resolve(r); } };
     socket.setTimeout(timeoutMs);
@@ -59,16 +63,13 @@ function testProxyConnect(proxyUrl, timeoutMs) {
     socket.on("data", buf => finish(/^HTTP\/1\.[01] 200/.test(buf.toString("latin1")) ? "ok" : null));
     socket.on("error", () => finish(null));
     socket.on("timeout", () => finish(null));
+    socket.on("close", () => finish(null));
   });
 }
-const curl = async (args, timeout) => {
-  // usado so para baixar as listas (HTTPS direto, sem proxy)
-  const url = args.find(a => a.startsWith("http"));
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
-    return { ok: res.ok, body: await res.text() };
-  } catch { return { ok: false, body: "" }; }
-};
+const testProxy = proxyUrl => Promise.race([
+  testProxyConnect(proxyUrl, TIMEOUT_MS),
+  sleep(TIMEOUT_MS + 1500).then(() => null),
+]);
 
 let cookie = "";
 async function api(method, apiPath, body) {
@@ -77,99 +78,108 @@ async function api(method, apiPath, body) {
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const set = res.headers.getSetCookie?.() || [];
-  for (const c of set) { const kv = c.split(";")[0]; if (!cookie.includes(kv.split("=")[0] + "=")) cookie += (cookie ? "; " : "") + kv; }
+  for (const c of res.headers.getSetCookie?.() || []) {
+    const kv = c.split(";")[0];
+    if (!cookie.includes(kv.split("=")[0] + "=")) cookie += (cookie ? "; " : "") + kv;
+  }
   let json = null; try { json = await res.json(); } catch {}
   return { status: res.status, json };
 }
 
-async function testProxy(proxyUrl) {
-  return testProxyConnect(proxyUrl, TIMEOUT_MS);
-}
-
-// o teste do proprio router e a autoridade: atualiza testStatus/isActive no painel
+// o teste do proprio router e a autoridade (atualiza testStatus/isActive no painel)
 async function routerTest(poolId) {
   const res = await api("POST", `/api/proxy-pools/${poolId}/test`);
   return { ok: !!(res.json && res.json.ok), elapsed: (res.json && res.json.elapsedMs) || 0 };
 }
 
-async function harvest() {
+let harvestCache = { at: 0, list: [] };
+async function harvestCandidates(emPool) {
+  if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
+    return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
+  }
   const found = new Set();
   for (const src of SOURCES) {
-    const { body } = await curl([src], 20000);
-    for (const line of body.split("\n")) {
-      const px = line.trim();
-      if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) found.add("http://" + px);
-    }
+    try {
+      const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
+      const body = await res.text();
+      for (const line of body.split("\n")) {
+        const px = line.trim();
+        if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(px)) found.add("http://" + px);
+      }
+    } catch {}
   }
-  return [...found];
+  harvestCache = { at: Date.now(), list: [...found] };
+  return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
 }
 
-async function cycle() {
-  state.stats.cycles++;
+// onda de testes com worker-pool: impossivel travar o ciclo
+async function testWave(candidates) {
+  const passers = [];
+  let idx = 0;
+  const worker = async () => {
+    while (idx < candidates.length) {
+      const px = candidates[idx++];
+      const ip = await Promise.race([testProxy(px), sleep(TIMEOUT_MS + 1500).then(() => null)]);
+      if (ip) passers.push(px);
+      else state.dead[px] = Date.now();
+    }
+  };
+  await Promise.all(Array.from({ length: 40 }, worker));
+  return passers;
+}
+
+let cycles = 0;
+async function guardCycle() {
+  cycles++;
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
-  if (login.json?.success === false) { console.log("[farmer] login falhou:", login.json?.error || login.status); return; }
+  if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
 
   const list = await api("GET", "/api/proxy-pools");
-  const pools = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || list.json || [];
-  const all = Array.isArray(pools) ? pools : [];
+  const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
   const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
-  console.log(`[farmer] ciclo ${state.stats.cycles}: ${all.length} pools no router, ${mine.length} sao meus (auto-)`);
 
-  // testa os meus PELO ROUTER (autoridade) — falhou nele, fora
-  let vivos = [];
-  for (const pool of mine) {
-    const res = await routerTest(pool.id);
-    if (res.ok) vivos.push(pool);
-    else {
-      await api("DELETE", "/api/proxy-pools/" + pool.id);
-      state.dead[pool.proxyUrl] = Date.now();
-      state.stats.removed++;
-      console.log(`  [remove] reprovou no router: ${pool.proxyUrl}`);
+  // 1) router-testa todos os meus em paralelo (10 por vez); falhou, deleta JÁ
+  let vivos = 0;
+  let idx = 0;
+  const mortos = [];
+  const checker = async () => {
+    while (idx < mine.length) {
+      const pool = mine[idx++];
+      const res = await routerTest(pool.id);
+      if (res.ok) vivos++;
+      else mortos.push(pool);
     }
+  };
+  await Promise.all(Array.from({ length: 10 }, checker));
+  for (const pool of mortos) {
+    await api("DELETE", "/api/proxy-pools/" + pool.id);
+    state.dead[pool.proxyUrl] = Date.now();
+    state.stats.removed++;
   }
 
-  // repor ate o alvo
-  const emFalta = POOL_SIZE - vivos.length;
-  if (emFalta > 0) {
-    const emPool = new Set(vivos.map(p => p.proxyUrl));
-    const DEAD_RETRY_MS = 24 * 3600 * 1000;
-    const candidatos = (await harvest()).filter(px =>
-      !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
-    console.log(`[farmer] faltam ${emFalta}; colhidos ${candidatos.length} candidatos`);
-    let criados = 0;
-    const wave = candidatos.slice(0, WAVE);
-    const testados = [];
-    let idx = 0;
-    const worker = async () => {
-      while (idx < wave.length) {
-        const px = wave[idx++];
-        const ip = await Promise.race([testProxy(px), sleep(TIMEOUT_MS + 1500).then(() => null)]);
-        if (ip) testados.push({ px, ip });
-        else state.dead[px] = Date.now();
-      }
-    };
-    await Promise.all(Array.from({ length: 40 }, worker));
-    console.log(`[farmer] onda testada: ${testados.length} vivos de ${wave.length}`);
-    for (const { px } of testados) {
-      if (criados >= emFalta) break;
+  // 2) reposicao imediata se ficou abaixo do alvo
+  let need = POOL_SIZE - vivos;
+  let criados = 0;
+  if (need > 0) {
+    const emPool = new Set(mine.map(p => p.proxyUrl));
+    const candidatos = await harvestCandidates(emPool);
+    console.log(`[farmer ${cycles}] ${vivos} vivos, faltam ${need}; ${candidatos.length} candidatos`);
+    const passers = await testWave(candidatos.slice(0, WAVE));
+    for (const px of passers) {
+      if (need <= 0) break;
       const create = await api("POST", "/api/proxy-pools", { name: PREFIX + px.replace(/^https?:\/\//, ""), proxyUrl: px, isActive: true });
       if (create.status >= 300) continue;
       const newId = (create.json && (create.json.pool?.id || create.json.id)) || null;
       const rt = newId ? await routerTest(newId) : { ok: false };
-      if (rt.ok) {
-        criados++; state.stats.created++; vivos.push({ proxyUrl: px });
-        console.log(`  [adiciona] ${px} (verificado pelo router em ${rt.elapsed}ms)`);
-      } else {
+      if (rt.ok) { criados++; need--; vivos++; state.stats.created++; console.log(`  [adiciona] ${px} (verificado em ${rt.elapsed}ms)`); }
+      else {
         if (newId) await api("DELETE", "/api/proxy-pools/" + newId);
         state.dead[px] = Date.now();
-        console.log(`  [descarta] reprovou no teste do router: ${px}`);
       }
     }
-    for (const { px } of wave) if (!testados.find(t => t.px === px)) state.dead[px] = state.dead[px] || (Date.now() - DEAD_RETRY_MS * 2);
   }
 
-  // Rotation Strategy = random em TODOS os providers, sempre
+  // 3) Rotation Strategy = random em todos os providers, sempre
   const st = await api("GET", "/api/settings");
   const settings = st.json || {};
   const strategies = { ...(settings.providerStrategies || {}) };
@@ -179,27 +189,19 @@ async function cycle() {
   }
   if (mudou) {
     await api("PATCH", "/api/settings", { providerStrategies: strategies });
-    console.log("[farmer] rotateStrategy=random aplicado em:", Object.keys(strategies).join(", "));
-  }
-  if (vivos.length) {
-    const alvo = mine.find(p => vivos.some(v => v.id === p.id));
-    const ref = alvo || vivos[0];
-    const aliasPadrao = process.env.FARM_PROVIDER_ALIAS;
-    if (aliasPadrao) {
-      strategies[aliasPadrao] = { ...(strategies[aliasPadrao] || {}), proxyPoolId: (alvo || vivos.find(v => v.id) || {}).id || ref.id, rotateStrategy: "random" };
-      await api("PATCH", "/api/settings", { providerStrategies: strategies });
-      console.log(`[farmer] provider '${aliasPadrao}' -> pool ${ref.id} (random)`);
-    }
+    console.log(`[farmer ${cycles}] rotateStrategy=random aplicado em:`, Object.keys(strategies).join(", "));
   }
 
   saveState();
-  console.log(`[farmer] fim do ciclo: ${vivos.length} vivos | criados acum: ${state.stats.created} | removidos acum: ${state.stats.removed}`);
+  console.log(`[farmer ${cycles}] fim: ${vivos} vivos (+${criados} novos, -${mortos.length} mortos) | criados: ${state.stats.created} | removidos: ${state.stats.removed}`);
 }
 
 (async () => {
-  if (ONCE) { await cycle(); process.exit(0); }
+  if (ONCE) { await guardCycle(); process.exit(0); }
   for (;;) {
-    try { await cycle(); } catch (e) { console.log("[farmer] erro no ciclo:", e.message); saveState(); }
-    await sleep(INTERVAL_MIN * 60 * 1000);
+    const t0 = Date.now();
+    try { await guardCycle(); } catch (e) { console.log(`[farmer] erro no ciclo:`, e.message); saveState(); }
+    const decorrido = Date.now() - t0;
+    await sleep(Math.max(2000, WATCH_SEC * 1000 - decorrido));
   }
 })();
