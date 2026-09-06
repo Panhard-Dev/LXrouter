@@ -32,7 +32,10 @@ const SOURCES = (process.env.FARM_SOURCES ||
   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=us,br,gb,ca,de,jp," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
-  "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
+  "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+  "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+  "https://www.proxy-list.download/api/v1/get?type=http&anon=elite",
+  "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/http.txt"
 ).split(",").map(s => s.trim()).map(t => {
   const mm = t.match(/^(?:https?:\/\/)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})(?::([^:@]+):([^@]+))?$/);
   if (!mm) return t;
