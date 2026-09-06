@@ -31,28 +31,10 @@ const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD || "123456";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-farmer.json");
 
-// 20 proxies Webshare (2 credenciais x 10 IPs). Cada um tem 1GB de trafego.
+// LISTA VAZIA: nenhum proxy, o router usa sempre a rede padrao.
+// Pra reativar a janela webshare, recolocar as entradas aqui no formato
+// "ip:porta:user:pass" (o farmer planta/valida/gira sozinho).
 const WEBSHARE_DEFAULT = [
-  "31.59.20.176:6754:ggktmmgj:8tqz9nbdylav",
-  "45.38.107.97:6014:ggktmmgj:8tqz9nbdylav",
-  "198.105.121.200:6462:ggktmmgj:8tqz9nbdylav",
-  "64.137.96.74:6641:ggktmmgj:8tqz9nbdylav",
-  "198.23.243.226:6361:ggktmmgj:8tqz9nbdylav",
-  "38.154.185.97:6370:ggktmmgj:8tqz9nbdylav",
-  "84.247.60.125:6095:ggktmmgj:8tqz9nbdylav",
-  "142.111.67.146:5611:ggktmmgj:8tqz9nbdylav",
-  "191.96.254.138:6185:ggktmmgj:8tqz9nbdylav",
-  "31.58.9.4:6077:ggktmmgj:8tqz9nbdylav",
-  "31.59.20.176:6754:zxucoiox:1mg8kgu44l0q",
-  "45.38.107.97:6014:zxucoiox:1mg8kgu44l0q",
-  "198.105.121.200:6462:zxucoiox:1mg8kgu44l0q",
-  "64.137.96.74:6641:zxucoiox:1mg8kgu44l0q",
-  "198.23.243.226:6361:zxucoiox:1mg8kgu44l0q",
-  "38.154.185.97:6370:zxucoiox:1mg8kgu44l0q",
-  "84.247.60.125:6095:zxucoiox:1mg8kgu44l0q",
-  "142.111.67.146:5611:zxucoiox:1mg8kgu44l0q",
-  "191.96.254.138:6185:zxucoiox:1mg8kgu44l0q",
-  "31.58.9.4:6077:zxucoiox:1mg8kgu44l0q",
 ].map(s => {
   const [host, port, user, pass] = s.split(":");
   return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
@@ -155,6 +137,21 @@ async function plantarJanela(startIdx, todosPools) {
 
 async function ciclo() {
   state.stats.cycles++;
+
+  // lista vazia no codigo = MODO REDE PADRAO: nao planta nada, nao testa nada.
+  // So garante round-robin e apaga qualquer pool auto- que tenha sobrado.
+  if (!WEBSHARE.length) {
+    const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
+    if (login.json?.success === false) { console.log(`[window ${state.stats.cycles}] login falhou`); return; }
+    await garantirRoundRobin();
+    const todos = await listPools();
+    const meus = todos.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+    for (const p of meus) { try { await delPool(p.id); state.stats.removed++; } catch {} }
+    if (meus.length) console.log(`[window ${state.stats.cycles}] lista vazia: ${meus.length} pools auto- removidos (REDE PADRAO)`);
+    saveState();
+    return;
+  }
+
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
   if (login.json?.success === false) { console.log(`[window ${state.stats.cycles}] login falhou`); return; }
 
