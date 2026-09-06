@@ -195,6 +195,7 @@ async function testWave(candidates) {
     }
   };
   await Promise.all(Array.from({ length: 40 }, worker));
+  console.log(`[debug-wave] candidatos: ${candidates.length} | passers: ${passers.length}`);
   return passers;
 }
 
