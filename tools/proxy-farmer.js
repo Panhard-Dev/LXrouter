@@ -33,7 +33,12 @@ const SOURCES = (process.env.FARM_SOURCES ||
   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=us,br,gb,ca,de,jp," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
-).split(",").map(s => s.trim()).filter(Boolean);
+).split(",").map(s => s.trim()).map(t => {
+  const mm = t.match(/^(?:https?:\/\/)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})(?::([^:@]+):([^@]+))?$/);
+  if (!mm) return t;
+  const [, ip, port, user, pass] = mm;
+  return `http://${user ? `${user}:${pass}@` : ""}${ip}:${port}`;
+}).filter(Boolean);
 const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);  // padrao fixo: 50
 const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 60);
 const WAVE = Number(process.env.FARM_WAVE || 400);
@@ -50,13 +55,7 @@ const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
 const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
 const GIST_ID = process.env.FARM_GIST_ID || "f4d5df48748c6be6d66d6794107908f4";
 const GIST_URL = `https://gist.githubusercontent.com/Panhard-Dev/${GIST_ID}/raw/`;
-const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim())).map(s2 => {
-    const t = s2.trim();
-    const mm = t.match(/^(?:https?:\/\/)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})(?::([^:@]+):([^@]+))?$/);
-    if (!mm) return t;
-    const [, ip, port, user, pass] = mm;
-    return `http://${user ? `${user}:${pass}@` : ""}${ip}:${port}`;
-  }).filter(Boolean);
+const RELAYS = (process.env.FARM_RELAYS || "https://vercel-relay-9ufpvqdi5-light-opis-projects.vercel.app,https://vercel-relay-eb0i6abzo-pannnns-projects.vercel.app").split(",").map(s2 => s2.trim()).filter(Boolean);
 
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 let lastRedeploy = 0;
