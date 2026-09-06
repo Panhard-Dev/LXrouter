@@ -6,6 +6,7 @@ COPY package.json cli.js LICENSE README.md ./
 COPY src ./src
 COPY hooks ./hooks
 COPY app ./app
+COPY tools ./tools
 COPY init-key.sh init-key.js ./
 
 RUN npm install --omit=dev
