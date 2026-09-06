@@ -28,12 +28,13 @@ const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD || "123456";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".9router");
 const STATE_FILE = process.env.FARM_STATE_FILE || path.join(DATA_DIR, "proxy-farmer.json");
 const SOURCES = (process.env.FARM_SOURCES ||
+  "https://gist.githubusercontent.com/Panhard-Dev/f4d5df48748c6be6d66d6794107908f4/raw/proxies.txt," +
   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt," +
   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all," +
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt," +
   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
 ).split(",").map(s => s.trim()).filter(Boolean);
-const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);
+const POOL_SIZE = Number(process.env.FARM_POOL_SIZE || 50);  // padrao fixo: 50
 const WATCH_SEC = Number(process.env.FARM_WATCH_SEC || 60);
 const WAVE = Number(process.env.FARM_WAVE || 400);
 const TIMEOUT_MS = Number(process.env.FARM_TIMEOUT_MS || 9000);
@@ -43,9 +44,10 @@ const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
 const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
 const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/muse-spark-1.3-contributor-free(xhigh)";
+// a API key do render NAO vai no codigo (repo publico): seta so ela no env do deploy
 const REDEPLOY_KEY = process.env.FARM_REDEPLOY_KEY || "";
-const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "";
-const GIST_ID = process.env.FARM_GIST_ID || "";
+const REDEPLOY_SERVICE = process.env.FARM_REDEPLOY_SERVICE || "srv-daee451t0dsc739s5tf0";
+const GIST_ID = process.env.FARM_GIST_ID || "f4d5df48748c6be6d66d6794107908f4";
 
 const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0, redeploys: 0 } };
 let lastRedeploy = 0;
