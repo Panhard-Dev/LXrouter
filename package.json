@@ -19,7 +19,9 @@
     "pack:cli": "npm run build && npm pack --pack-destination ..",
     "publish:cli": "npm run build && npm publish",
     "postinstall": "node hooks/postinstall.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "farm": "node tools/proxy-farmer.js --once",
+    "farm:loop": "node tools/proxy-farmer.js"
   },
   "dependencies": {
     "enquirer": "^2.4.1",
