@@ -41,8 +41,10 @@ const TEST_URL = process.env.FARM_TEST_URL || "https://ipv4.webshare.io/";
 const PREFIX = "auto-";
 const ONCE = process.argv.includes("--once");
 const DEAD_RETRY_MS = 24 * 3600 * 1000;
+const BURNED_RETRY_MS = 5 * 3600 * 1000;  // IP queimado pro opencode volta no ciclo de ~5h
+const CANARY_MODEL = process.env.FARM_CANARY_MODEL || "oc/muse-spark-1.3-contributor-free(xhigh)";
 
-const state = { dead: {}, stats: { cycles: 0, created: 0, removed: 0 } };
+const state = { dead: {}, burned: {}, stats: { cycles: 0, created: 0, removed: 0 } };
 try { Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
 const saveState = () => { try { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch {} };
 
@@ -97,7 +99,8 @@ async function harvestCandidates(emPool) {
   // fontes que ja sao proxies diretos (ip:porta ou http://ip:porta) entram como candidatos
   const diretos = SOURCES.filter(s => /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(s));
   if (Date.now() - harvestCache.at < 30 * 60 * 1000 && harvestCache.list.length > POOL_SIZE * 4) {
-    return [...diretos, ...harvestCache.list].filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
+    return [...diretos, ...harvestCache.list].filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
+      !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS));
   }
   const found = new Set(diretos);
   for (const src of SOURCES) {
@@ -112,7 +115,8 @@ async function harvestCandidates(emPool) {
     } catch {}
   }
   harvestCache = { at: Date.now(), list: [...found] };
-  return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS));
+  return harvestCache.list.filter(px => !emPool.has(px) && !(state.dead[px] && Date.now() - state.dead[px] < DEAD_RETRY_MS) &&
+      !(state.burned[px] && Date.now() - state.burned[px] < BURNED_RETRY_MS));
 }
 
 // onda de testes com worker-pool: impossivel travar o ciclo
@@ -137,9 +141,25 @@ async function guardCycle() {
   const login = await api("POST", "/api/auth/login", { password: ROUTER_PASSWORD });
   if (login.json?.success === false) { console.log(`[farmer ${cycles}] login falhou:`, login.json?.error || login.status); return; }
 
+  // canario: o opencode ta recusando o pool atual com FreeUsageLimitError?
+  const canary = await api("POST", "/v1/chat/completions", { model: CANARY_MODEL, stream: false, max_tokens: 16,
+    messages: [{ role: "user", content: "ok" }] });
+  const msg = JSON.stringify(canary.json || {});
+  let queimado = msg.includes("FreeUsageLimitError");
+  if (queimado) console.log(`[farmer ${cycles}] CANARIO 429: cota do IP(es) atual queimada -> renovando todos os auto- agora`);
+
   const list = await api("GET", "/api/proxy-pools");
   const all = (list.json && (list.json.proxyPools || list.json.pools || list.json.data)) || [];
-  const mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  let mine = all.filter(p => typeof p.name === "string" && p.name.startsWith(PREFIX));
+  if (queimado && mine.length) {
+    for (const pool of mine) {
+      await api("DELETE", "/api/proxy-pools/" + pool.id);
+      state.burned[pool.proxyUrl] = Date.now();
+      state.stats.removed++;
+    }
+    console.log(`[farmer ${cycles}] flush: ${mine.length} pools queimados removidos, replantando frescos`);
+    mine = [];
+  }
 
   // 1) quem o router ja marcou error/inativo: fora IMEDIATO (sem re-teste)
   // 2) os demais: re-verifica pelo router em paralelo (10 por vez); falhou, fora
