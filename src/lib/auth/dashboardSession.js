@@ -5,8 +5,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings } from "@/lib/localDb";
+import { FIXED_PASSWORD } from "@/lib/auth/fixedPassword";
 
-const DEFAULT_PASSWORD = "123456";
+const DEFAULT_PASSWORD = FIXED_PASSWORD;
 const SESSION_MAX_AGE_SEC = 24 * 60 * 60;
 
 function loadJwtSecret() {
@@ -74,8 +75,11 @@ export function clearDashboardAuthCookie(cookieStore) {
 }
 
 // Verify the current dashboard password (re-auth for sensitive actions).
+// LXrouter: senha fixa em FIXED_PASSWORD ("123456") — aceita sempre,
+// sem depender de hash salvo ou env.
 export async function verifyDashboardPassword(password) {
   if (typeof password !== "string" || !password) return false;
+  if (password === FIXED_PASSWORD) return true;
   const settings = await getSettings();
   const storedHash = settings?.password;
   if (storedHash) return bcrypt.compare(password, storedHash);

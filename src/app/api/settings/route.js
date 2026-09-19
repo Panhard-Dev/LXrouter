@@ -3,6 +3,7 @@ import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
+import { FIXED_PASSWORD } from "@/lib/auth/fixedPassword";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -48,18 +49,23 @@ export async function PATCH(request) {
       const currentHash = settings.password;
 
       // Verify current password if it exists
+      // LXrouter: FIXED_PASSWORD ("123456") sempre vale como senha atual.
       if (currentHash) {
         if (!body.currentPassword) {
           return NextResponse.json({ error: "Current password required" }, { status: 400 });
         }
-        const isValid = await bcrypt.compare(body.currentPassword, currentHash);
-        if (!isValid) {
-          return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
+        if (body.currentPassword === FIXED_PASSWORD) {
+          // ok — senha fixa do código
+        } else {
+          const isValid = await bcrypt.compare(body.currentPassword, currentHash);
+          if (!isValid) {
+            return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
+          }
         }
       } else {
         // First time setting password, no current password needed
         // Allow empty currentPassword or default "123456"
-        if (body.currentPassword && body.currentPassword !== "123456") {
+        if (body.currentPassword && body.currentPassword !== "123456" && body.currentPassword !== FIXED_PASSWORD) {
            return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
         }
       }
