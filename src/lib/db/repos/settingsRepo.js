@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { NO_API_MODE } from "../../auth/noApiMode.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -24,7 +25,7 @@ const DEFAULT_SETTINGS = {
     videoInput: { enabled: false, roundRobin: false, models: [] },
   },
   requireLogin: true,
-  requireApiKey: true,
+  requireApiKey: false,
   tunnelDashboardAccess: true,
   authMode: "password",
   ssoType: "oidc",
@@ -73,6 +74,8 @@ async function readRaw() {
 // Merge raw settings with defaults; backward-compat for missing keys
 export function mergeWithDefaults(raw) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+  // LXrouter sem API: força desligado mesmo se o banco antigo tinha true.
+  if (NO_API_MODE) merged.requireApiKey = false;
   for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS)) {
     if (merged[key] === undefined) {
       if (
